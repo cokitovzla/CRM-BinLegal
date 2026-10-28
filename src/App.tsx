@@ -420,6 +420,16 @@ function MainAppContent() {
     }
   };
 
+  const handleUpdateLead = async (updatedLead: Lead) => {
+    setLeads(prev => prev.map(lead => lead.id === updatedLead.id ? updatedLead : lead));
+    setPreviewLeads(prev => prev.map(lead => lead.id === updatedLead.id ? updatedLead : lead));
+    try {
+      await setDoc(doc(db, 'leads', updatedLead.id), updatedLead, { merge: true });
+    } catch (err) {
+      console.warn('Firestore update lead:', err);
+    }
+  };
+
   const handleUpdateProcessStatus = async (
     processId: string, 
     status: ProcessStatus, 
@@ -456,6 +466,19 @@ function MainAppContent() {
     } catch (err) {
       console.error('Could not reassign process:', err);
       showNotification('No se pudo cambiar el abogado. Verifica los permisos y vuelve a intentarlo.');
+    }
+  };
+
+  const handleCreateProcess = async (newProcess: LegalProcess) => {
+    setProcesses(prev => [newProcess, ...prev]);
+    setPreviewProcesses(prev => [newProcess, ...prev]);
+    showNotification(`¡Expediente "${newProcess.title}" abierto y formalizado!`);
+    if (!isCrmPreview) {
+      try {
+        await processService.createProcess(newProcess);
+      } catch (err) {
+        console.warn('Could not save process to Firestore:', err);
+      }
     }
   };
 
@@ -569,6 +592,7 @@ function MainAppContent() {
       <AdminCRM
         leads={isCrmPreview ? previewLeads : leads}
         processes={isCrmPreview ? previewProcesses : processes}
+        onCreateProcess={handleCreateProcess}
         onUpdateLeadStatus={isCrmPreview
           ? (leadId, newStatus) => setPreviewLeads(prev => prev.map(lead => lead.id === leadId ? { ...lead, status: newStatus } : lead))
           : handleUpdateLeadStatus}
@@ -580,6 +604,7 @@ function MainAppContent() {
         onUpdateProcessLawyer={isCrmPreview ? (processId, lawyer) => setPreviewProcesses(prev => prev.map(process => process.id === processId ? { ...process, assignedLawyer: lawyer, updatedAt: new Date().toISOString().slice(0, 10) } : process)) : handleUpdateProcessLawyer}
         onBackToLanding={() => setShowDiagnosticModal(true)}
         onOpenDiagnostic={() => setShowDiagnosticModal(true)}
+        onUpdateLead={handleUpdateLead}
       />
 
     </div>

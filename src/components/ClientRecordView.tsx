@@ -16,7 +16,8 @@ import {
   Star,
   ExternalLink,
   Users,
-  ArrowRight
+  ArrowRight,
+  Plus
 } from 'lucide-react';
 import type { Lead, LegalProcess } from '../types';
 
@@ -25,10 +26,12 @@ interface ClientRecordViewProps {
   processes: LegalProcess[];
   allLeads?: Lead[];
   onBack: () => void;
+  onBackLabel?: string;
   onOpenProcess: (process: LegalProcess) => void;
   onOpenCompany: (company: string) => void;
   onOpenContact?: (contact: Lead) => void;
   onAddNote: (leadId: string, text: string, author: string) => void;
+  onCreateProcess?: (lead: Lead) => void;
 }
 
 const norm = (s?: string) => (s || '').trim().toLowerCase().replace(/\s+/g, ' ');
@@ -38,10 +41,12 @@ export const ClientRecordView: React.FC<ClientRecordViewProps> = ({
   processes, 
   allLeads = [],
   onBack, 
+  onBackLabel = 'Volver al directorio',
   onOpenProcess, 
   onAddNote, 
   onOpenCompany,
-  onOpenContact
+  onOpenContact,
+  onCreateProcess
 }) => {
   const [note, setNote] = useState('');
   const [author, setAuthor] = useState('José Rafael Vásquez');
@@ -79,7 +84,7 @@ export const ClientRecordView: React.FC<ClientRecordViewProps> = ({
           className="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold text-slate-700 hover:text-[#0071ce] hover:bg-slate-100 transition-colors cursor-pointer"
         >
           <ArrowLeft className="h-4 w-4" />
-          <span>Volver al directorio</span>
+          <span>{onBackLabel}</span>
         </button>
 
         <span className="text-xs text-slate-500 font-mono">
@@ -142,18 +147,32 @@ export const ClientRecordView: React.FC<ClientRecordViewProps> = ({
             </div>
           </div>
 
-          {/* Quick Metrics */}
-          <div className="grid grid-cols-2 gap-3 bg-slate-50 p-2.5 rounded-xl border border-slate-200/80 shrink-0">
-            <div className="text-center px-4 py-1">
-              <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Expedientes</div>
-              <div className="text-xl font-bold text-slate-900 tabular-nums">{clientProcesses.length}</div>
-            </div>
-            <div className="text-center px-4 py-1 border-l border-slate-200">
-              <div className="text-[10px] font-semibold uppercase tracking-wider text-[#0071ce]">Trámites Activos</div>
-              <div className="text-xl font-bold text-[#0071ce] tabular-nums">
-                {clientProcesses.filter(p => p.status !== 'completado').length}
+          {/* Quick Metrics & Actions */}
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 shrink-0">
+            <div className="grid grid-cols-2 gap-3 bg-slate-50 p-2.5 rounded-xl border border-slate-200/80">
+              <div className="text-center px-4 py-1">
+                <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Expedientes</div>
+                <div className="text-xl font-bold text-slate-900 tabular-nums">{clientProcesses.length}</div>
+              </div>
+              <div className="text-center px-4 py-1 border-l border-slate-200">
+                <div className="text-[10px] font-semibold uppercase tracking-wider text-[#0071ce]">Trámites Activos</div>
+                <div className="text-xl font-bold text-[#0071ce] tabular-nums">
+                  {clientProcesses.filter(p => p.status !== 'completado').length}
+                </div>
               </div>
             </div>
+
+            {onCreateProcess && (
+              <button
+                type="button"
+                onClick={() => onCreateProcess(lead)}
+                className="inline-flex items-center justify-center gap-2 bg-[#0071ce] hover:bg-[#005ba7] text-white px-4 py-3 rounded-xl text-xs font-bold shadow-xs hover:shadow-md transition-all cursor-pointer h-full"
+                title="Convertir esta solicitud o cliente en un expediente formal sin duplicidad de datos"
+              >
+                <Workflow className="w-4 h-4" />
+                <span>Abrir Expediente</span>
+              </button>
+            )}
           </div>
 
         </div>
@@ -301,14 +320,26 @@ export const ClientRecordView: React.FC<ClientRecordViewProps> = ({
           
           {/* Process List */}
           <div className="rounded-xl border border-slate-200 bg-white shadow-xs">
-            <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-slate-100 px-5 py-4 gap-2">
               <div>
                 <h2 className="text-sm font-bold text-slate-900">Expedientes y Trámites Vinculados</h2>
                 <p className="text-xs text-slate-500">Trámites a cargo de este contacto o de su empresa.</p>
               </div>
-              <span className="text-xs font-semibold bg-slate-100 text-slate-700 px-2.5 py-1 rounded-full">
-                {clientProcesses.length} {clientProcesses.length === 1 ? 'expediente' : 'expedientes'}
-              </span>
+              <div className="flex items-center gap-2 self-start sm:self-auto">
+                <span className="text-xs font-semibold bg-slate-100 text-slate-700 px-2.5 py-1 rounded-full">
+                  {clientProcesses.length} {clientProcesses.length === 1 ? 'expediente' : 'expedientes'}
+                </span>
+                {onCreateProcess && (
+                  <button
+                    type="button"
+                    onClick={() => onCreateProcess(lead)}
+                    className="inline-flex items-center gap-1.5 text-xs font-bold text-white bg-[#0071ce] hover:bg-[#005ba7] px-3 py-1.5 rounded-lg shadow-xs transition-colors cursor-pointer"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Nuevo Expediente</span>
+                  </button>
+                )}
+              </div>
             </div>
 
             <div className="divide-y divide-slate-100">
@@ -353,10 +384,22 @@ export const ClientRecordView: React.FC<ClientRecordViewProps> = ({
               ))}
 
               {clientProcesses.length === 0 && (
-                <div className="p-8 text-center">
+                <div className="p-8 text-center space-y-3">
                   <FileText className="mx-auto h-7 w-7 text-slate-300" />
-                  <p className="mt-2 text-xs font-bold text-slate-700">Sin expedientes abiertos</p>
-                  <p className="mt-1 text-xs text-slate-500">Cuando se formalice un servicio, su avance se registrará aquí.</p>
+                  <div>
+                    <p className="text-xs font-bold text-slate-700">Sin expedientes abiertos aún</p>
+                    <p className="text-xs text-slate-500 mt-0.5">Apertura el primer trámite formal para transferir automáticamente el diagnóstico y comenzar el seguimiento.</p>
+                  </div>
+                  {onCreateProcess && (
+                    <button
+                      type="button"
+                      onClick={() => onCreateProcess(lead)}
+                      className="inline-flex items-center gap-2 bg-[#0071ce] hover:bg-[#005ba7] text-white px-4 py-2 rounded-lg text-xs font-bold shadow-xs transition-colors cursor-pointer"
+                    >
+                      <Workflow className="w-3.5 h-3.5" />
+                      <span>⚡ Abrir Primer Expediente</span>
+                    </button>
+                  )}
                 </div>
               )}
             </div>

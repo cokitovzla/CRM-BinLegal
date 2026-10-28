@@ -1,5 +1,15 @@
 import React, { useState } from 'react';
-import { Lead, LeadStatus, BusinessStage, LegalArea, InternalNote, LegalProcess, ProcessStatus } from '../types';
+import { 
+  Lead, 
+  LeadStatus, 
+  BusinessStage, 
+  LegalArea, 
+  InternalNote, 
+  LegalProcess, 
+  ProcessStatus,
+  LeadBudget,
+  LeadDocument 
+} from '../types';
 import { 
   Users, 
   Search, 
@@ -18,15 +28,16 @@ import {
   AlertTriangle, 
   ChevronRight, 
   Send, 
-  Briefcase,
-  Layers,
-  LayoutGrid,
-  List,
-  FolderKanban,
-  Building2,
-  Star,
-  Copy,
-  Check
+  Briefcase, 
+  Layers, 
+  LayoutGrid, 
+  List, 
+  FolderKanban, 
+  Building2, 
+  Star, 
+  Copy, 
+  Check, 
+  Workflow 
 } from 'lucide-react';
 import { SectorSelector, COMMON_BUSINESS_SECTORS } from './SectorSelector';
 import { sendPasswordResetEmail } from 'firebase/auth';
@@ -34,10 +45,13 @@ import { auth } from '../lib/firebase';
 import { WorkflowBoard } from './WorkflowBoard';
 import { ClientRecordView } from './ClientRecordView';
 import { CompanyRecordView } from './CompanyRecordView';
+import { ConvertLeadToProcessModal } from './ConvertLeadToProcessModal';
+import { RequestDetailView } from './RequestDetailView';
 
 interface AdminCRMProps {
   leads: Lead[];
   processes?: LegalProcess[];
+  onCreateProcess?: (process: LegalProcess) => void;
   onUpdateLeadStatus: (leadId: string, newStatus: LeadStatus) => void;
   onAddInternalNote: (leadId: string, noteText: string, author: string) => void;
   onAddManualLead: (lead: Lead) => void;
@@ -45,6 +59,7 @@ interface AdminCRMProps {
   onUpdateProcessLawyer?: (processId: string, lawyer: string) => void;
   onBackToLanding: () => void;
   onOpenDiagnostic?: () => void;
+  onUpdateLead?: (lead: Lead) => void;
 }
 
 const STAGES_CONFIG: Array<{ id: LeadStatus; label: string; desc: string }> = [
@@ -57,13 +72,15 @@ const STAGES_CONFIG: Array<{ id: LeadStatus; label: string; desc: string }> = [
 export const AdminCRM: React.FC<AdminCRMProps> = ({
   leads,
   processes = [],
+  onCreateProcess,
   onUpdateLeadStatus,
   onAddInternalNote,
   onAddManualLead,
   onUpdateProcessStatus,
   onUpdateProcessLawyer,
   onBackToLanding,
-  onOpenDiagnostic
+  onOpenDiagnostic,
+  onUpdateLead
 }) => {
   const [adminTab, setAdminTab] = useState<'requests' | 'contacts' | 'processes' | 'lawyers'>('requests');
   const [expandedMenu, setExpandedMenu] = useState<'Solicitudes' | 'Directorio' | 'Expedientes' | ''>('Solicitudes');
@@ -78,6 +95,7 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
   const [selectedStageFilter, setSelectedStageFilter] = useState<string>('all');
   const [selectedSectorFilter, setSelectedSectorFilter] = useState<string>('all');
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
+  const [selectedLeadOrigin, setSelectedLeadOrigin] = useState<'requests' | 'contacts'>('requests');
   const [selectedCompany, setSelectedCompany] = useState<string | null>(null);
   const [contactDirectoryView, setContactDirectoryView] = useState<'people' | 'companies'>('companies');
   const [contactSectorFilter, setContactSectorFilter] = useState<string>('all');
@@ -105,6 +123,93 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
   const [newStage, setNewStage] = useState<BusinessStage>('Recién constituida');
   const [newAreas, setNewAreas] = useState<LegalArea[]>(['Corporativo']);
   const [newSituation, setNewSituation] = useState('');
+
+  // Convert Lead / Company to Process Modal State (Opción 1: Conexión Solicitud ➔ Expediente)
+  const [showConvertModal, setShowConvertModal] = useState(false);
+  const [leadToConvert, setLeadToConvert] = useState<Lead | null>(null);
+  const [companyToConvert, setCompanyToConvert] = useState<string>('');
+
+  const handleOpenConvertModal = (targetLead?: Lead | null, companyName?: string) => {
+    setLeadToConvert(targetLead || null);
+    setCompanyToConvert(companyName || targetLead?.company || '');
+    setShowConvertModal(true);
+  };
+
+  const handleLeadLawyerChange = (leadId: string, lawyer: string) => {
+    const target = leads.find(l => l.id === leadId);
+    if (target) {
+      const updated = { ...target, assignedLawyer: lawyer };
+      onUpdateLead?.(updated);
+      if (selectedLead && selectedLead.id === leadId) {
+        setSelectedLead(updated);
+      }
+    }
+  };
+
+  const handleLeadBudgetChange = (leadId: string, budget: LeadBudget) => {
+    const target = leads.find(l => l.id === leadId);
+    if (target) {
+      const updated = { ...target, budget };
+      onUpdateLead?.(updated);
+      if (selectedLead && selectedLead.id === leadId) {
+        setSelectedLead(updated);
+      }
+    }
+  };
+
+  const handleLeadDocumentAdd = (leadId: string, doc: LeadDocument) => {
+    const target = leads.find(l => l.id === leadId);
+    if (target) {
+      const existing = target.documents || [];
+      const updated = { ...target, documents: [doc, ...existing] };
+      onUpdateLead?.(updated);
+      if (selectedLead && selectedLead.id === leadId) {
+        setSelectedLead(updated);
+      }
+    }
+  };
+
+  const handleLeadDocumentStatusChange = (leadId: string, docId: string, status: LeadDocument['status']) => {
+    const target = leads.find(l => l.id === leadId);
+    if (target && target.documents) {
+      const updatedDocs = target.documents.map(d => d.id === docId ? { ...d, status } : d);
+      const updated = { ...target, documents: updatedDocs };
+      onUpdateLead?.(updated);
+      if (selectedLead && selectedLead.id === leadId) {
+        setSelectedLead(updated);
+      }
+    }
+  };
+
+  const handleConfirmConvert = (
+    newProcess: LegalProcess, 
+    options: { markAsActive: boolean; addNote: boolean; leadId?: string }
+  ) => {
+    if (onCreateProcess) {
+      onCreateProcess(newProcess);
+    }
+    if (options.leadId) {
+      if (options.markAsActive) {
+        onUpdateLeadStatus(options.leadId, 'cliente_activo');
+      }
+      if (options.addNote) {
+        onAddInternalNote(
+          options.leadId,
+          `Expediente formalizado: "${newProcess.title}" (Categoría: ${newProcess.category}) asignado a ${newProcess.assignedLawyer}. Plazo meta: ${newProcess.targetDate}. Hito inicial: ${newProcess.nextMilestone}`,
+          'José Rafael Vásquez'
+        );
+      }
+      const target = leads.find(l => l.id === options.leadId);
+      if (target) {
+        const updated = { ...target, status: 'cliente_activo' as LeadStatus, linkedProcessId: newProcess.id };
+        onUpdateLead?.(updated);
+      }
+    }
+    // Seamlessly transition right into the workflow board for zero friction
+    setSelectedLead(null);
+    setSelectedCompany(null);
+    setSelectedWorkflowProcess(newProcess);
+  };
 
   React.useEffect(() => { localStorage.setItem('binlegal_crm_lawyers_v1', JSON.stringify(lawyers)); }, [lawyers]);
   React.useEffect(() => { localStorage.setItem('binlegal_crm_lawyer_profiles_v1', JSON.stringify(lawyerProfiles)); }, [lawyerProfiles]);
@@ -432,6 +537,7 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
             onOpenProcess={(process) => setSelectedWorkflowProcess(process)}
             onAddContact={(newContact) => onAddManualLead(newContact)}
             onAddNote={(leadId, text, author) => onAddInternalNote(leadId, text, author)}
+            onCreateProcess={(comp) => handleOpenConvertModal(null, comp)}
           />
         ) : selectedWorkflowProcess ? (
           <WorkflowBoard 
@@ -441,19 +547,44 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
             onBackLabel={selectedLead ? 'Volver al perfil del cliente' : selectedCompany ? 'Volver al perfil corporativo' : 'Volver a expedientes'} 
           />
         ) : selectedLead ? (
-          <ClientRecordView 
-            lead={selectedLead} 
-            processes={processes} 
-            allLeads={leads}
-            onBack={() => setSelectedLead(null)} 
-            onOpenCompany={(company) => { setSelectedLead(null); setSelectedCompany(company); setContactDirectoryView('companies'); setAdminTab('contacts'); }} 
-            onOpenProcess={setSelectedWorkflowProcess} 
-            onOpenContact={(contact) => setSelectedLead(contact)}
-            onAddNote={(leadId, text, author) => { 
-              onAddInternalNote(leadId, text, author); 
-              setSelectedLead(prev => prev && prev.id === leadId ? { ...prev, internalNotes: [...prev.internalNotes, { id: 'note-' + Date.now(), author, text, timestamp: new Date().toISOString().replace('T', ' ').slice(0, 16) }] } : prev); 
-            }} 
-          />
+          selectedLeadOrigin === 'requests' ? (
+            <RequestDetailView
+              lead={selectedLead}
+              lawyers={lawyers}
+              processes={processes}
+              allLeads={leads}
+              onBack={() => setSelectedLead(null)}
+              onBackLabel="Volver a solicitudes"
+              onUpdateLeadStatus={handleStatusChange}
+              onUpdateLeadLawyer={handleLeadLawyerChange}
+              onUpdateLeadBudget={handleLeadBudgetChange}
+              onAddLeadDocument={handleLeadDocumentAdd}
+              onUpdateLeadDocumentStatus={handleLeadDocumentStatusChange}
+              onAddNote={(leadId, text, author) => {
+                onAddInternalNote(leadId, text, author);
+                setSelectedLead(prev => prev && prev.id === leadId ? { ...prev, internalNotes: [...prev.internalNotes, { id: 'note-' + Date.now(), author, text, timestamp: new Date().toISOString().replace('T', ' ').slice(0, 16) }] } : prev);
+              }}
+              onCreateProcess={handleConfirmConvert}
+              onOpenProcess={(proc) => setSelectedWorkflowProcess(proc)}
+              onOpenCompany={(company) => { setSelectedLead(null); setSelectedCompany(company); setContactDirectoryView('companies'); setAdminTab('contacts'); }}
+            />
+          ) : (
+            <ClientRecordView 
+              lead={selectedLead} 
+              processes={processes} 
+              allLeads={leads}
+              onBack={() => setSelectedLead(null)} 
+              onBackLabel="Volver al directorio"
+              onOpenCompany={(company) => { setSelectedLead(null); setSelectedCompany(company); setContactDirectoryView('companies'); setAdminTab('contacts'); }} 
+              onOpenProcess={setSelectedWorkflowProcess} 
+              onOpenContact={(contact) => { setSelectedLead(contact); setSelectedLeadOrigin('contacts'); }}
+              onAddNote={(leadId, text, author) => { 
+                onAddInternalNote(leadId, text, author); 
+                setSelectedLead(prev => prev && prev.id === leadId ? { ...prev, internalNotes: [...prev.internalNotes, { id: 'note-' + Date.now(), author, text, timestamp: new Date().toISOString().replace('T', ' ').slice(0, 16) }] } : prev); 
+              }} 
+              onCreateProcess={(l) => handleOpenConvertModal(l)}
+            />
+          )
         ) : adminTab === 'requests' ? (
           <>
             {/* Solicitudes: prioridad operativa, sin categoría de cliente activo */}
@@ -569,7 +700,10 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
                     {stageLeads.map((lead) => (
                       <div
                         key={lead.id}
-                        onClick={() => setSelectedLead(lead)}
+                        onClick={() => {
+                          setSelectedLead(lead);
+                          setSelectedLeadOrigin('requests');
+                        }}
                         className="bg-white p-4 rounded-xl border border-slate-200/90 hover:border-[#0071ce]/50 shadow-md hover:shadow-lg transition-all cursor-pointer space-y-2 group"
                       >
                         <div className="flex items-start justify-between gap-1">
@@ -603,7 +737,7 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
                           )}
                         </div>
 
-                        {/* Bottom card info */}
+                        {/* Bottom card info & Convert action */}
                         <div className="pt-2 border-t border-neutral-100 flex items-center justify-between text-[10px] text-neutral-400 font-mono">
                           <span>{lead.createdAt.slice(5, 10)}</span>
                           <span className="flex items-center gap-1 text-neutral-600 font-sans">
@@ -611,6 +745,19 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
                             <span>{lead.internalNotes.length}</span>
                           </span>
                         </div>
+
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleOpenConvertModal(lead);
+                          }}
+                          className="w-full mt-1.5 py-1.5 px-2 rounded-lg bg-blue-50 hover:bg-[#0071ce] text-[#0071ce] hover:text-white border border-blue-200 text-[10px] font-bold transition-all flex items-center justify-center gap-1 cursor-pointer"
+                          title="Convertir esta solicitud en expediente formal sin duplicidad de datos"
+                        >
+                          <Workflow className="w-3 h-3" />
+                          <span>Crear Expediente</span>
+                        </button>
                       </div>
                     ))}
 
@@ -655,7 +802,10 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
                   {[...filteredLeads].filter(lead => lead.status !== 'cliente_activo').sort((a,b) => { const order: Record<string, number> = { nuevo_lead: 0, diagnostico_enviado: 1, sesion_programada: 2, propuesta_presentada: 3 }; return (order[a.status] ?? 99) - (order[b.status] ?? 99) || a.fullName.localeCompare(b.fullName, 'es', { sensitivity: 'base' }); }).map((lead) => (
                     <tr 
                       key={lead.id} 
-                      onClick={() => setSelectedLead(lead)}
+                      onClick={() => {
+                        setSelectedLead(lead);
+                        setSelectedLeadOrigin('requests');
+                      }}
                       className="hover:bg-neutral-50/70 transition-colors cursor-pointer"
                     >
                       <td className="py-3 px-4">
@@ -689,15 +839,31 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
                         {lead.createdAt}
                       </td>
                       <td className="py-3 px-4 text-right">
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setSelectedLead(lead);
-                          }}
-                          className="px-2.5 py-1 text-xs font-semibold text-neutral-900 hover:bg-neutral-100 rounded border border-neutral-200"
-                        >
-                          Ver Detalle
-                        </button>
+                        <div className="flex items-center justify-end gap-1.5">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleOpenConvertModal(lead);
+                            }}
+                            className="px-2.5 py-1 text-xs font-bold text-[#0071ce] bg-blue-50 hover:bg-blue-100 rounded-lg border border-blue-200 transition-colors inline-flex items-center gap-1 cursor-pointer"
+                            title="Convertir esta solicitud en expediente formal sin duplicidad de datos"
+                          >
+                            <Workflow className="w-3 h-3" />
+                            <span>Expediente</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedLead(lead);
+                              setSelectedLeadOrigin('requests');
+                            }}
+                            className="px-2.5 py-1 text-xs font-semibold text-neutral-900 hover:bg-neutral-100 rounded-lg border border-neutral-200 transition-colors cursor-pointer"
+                          >
+                            Ver Detalle
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -1137,7 +1303,10 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
                               return (
                                 <tr
                                   key={lead.id}
-                                  onClick={() => setSelectedLead(lead)}
+                                  onClick={() => {
+                                    setSelectedLead(lead);
+                                    setSelectedLeadOrigin('contacts');
+                                  }}
                                   className="hover:bg-blue-50/50 transition-colors cursor-pointer group"
                                 >
                                   {/* Person & Job Title */}
@@ -1237,6 +1406,7 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
                                       onClick={(e) => {
                                         e.stopPropagation();
                                         setSelectedLead(lead);
+                                        setSelectedLeadOrigin('contacts');
                                       }}
                                       className="inline-flex items-center gap-1 text-xs font-semibold text-slate-700 hover:text-[#0071ce] bg-white hover:bg-slate-100 px-2.5 py-1.5 rounded-lg border border-slate-200 transition-colors cursor-pointer"
                                     >
@@ -1358,8 +1528,23 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
                 </div>
                 <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm shadow-slate-900/[0.03]">
                   <div className="flex flex-col gap-2 border-b border-slate-200 p-4 sm:flex-row sm:items-center sm:justify-between">
-                    <div><h3 className="text-sm font-bold text-slate-900">{cards.find(card => card.id === processQuickFilter)?.label}</h3><p className="text-xs text-slate-500">Selecciona el nombre de un trámite para abrir su expediente completo.</p></div>
-                    <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">{visibleProcesses.length} {visibleProcesses.length === 1 ? 'expediente' : 'expedientes'}</span>
+                    <div>
+                      <h3 className="text-sm font-bold text-slate-900">{cards.find(card => card.id === processQuickFilter)?.label}</h3>
+                      <p className="text-xs text-slate-500">Selecciona el nombre de un trámite para abrir su expediente completo.</p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">
+                        {visibleProcesses.length} {visibleProcesses.length === 1 ? 'expediente' : 'expedientes'}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => handleOpenConvertModal(null)}
+                        className="inline-flex items-center gap-1.5 text-xs font-bold text-white bg-[#0071ce] hover:bg-[#005ba7] px-3 py-1.5 rounded-xl shadow-xs transition-colors cursor-pointer"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>⚡ Nuevo Expediente</span>
+                      </button>
+                    </div>
                   </div>
                   <div className="overflow-x-auto">
                     <table className="w-full table-fixed border-collapse text-left text-xs">
@@ -1645,6 +1830,21 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
           </div>
         </div>
       )}
+
+      {/* CONVERT LEAD TO LEGAL PROCESS MODAL (Opción 1: Conexión Solicitud ➔ Expediente) */}
+      <ConvertLeadToProcessModal
+        isOpen={showConvertModal}
+        onClose={() => {
+          setShowConvertModal(false);
+          setLeadToConvert(null);
+          setCompanyToConvert('');
+        }}
+        lead={leadToConvert}
+        defaultCompany={companyToConvert}
+        lawyers={lawyers}
+        allLeads={leads}
+        onConfirm={handleConfirmConvert}
+      />
 
     </div>
   );

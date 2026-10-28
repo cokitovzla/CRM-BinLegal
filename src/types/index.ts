@@ -101,6 +101,34 @@ export interface RiskItem {
   actionRequired: string;
 }
 
+export interface LeadBudgetItem {
+  id: string;
+  concept: string;
+  area: string;
+  quantity: number;
+  unitPrice: number;
+}
+
+export interface LeadBudget {
+  items: LeadBudgetItem[];
+  currency: 'USD' | 'EUR' | 'VES';
+  discount?: number;
+  notes?: string;
+  status: 'borrador' | 'enviado' | 'aprobado' | 'rechazado';
+  createdAt?: string;
+  validUntil?: string;
+}
+
+export interface LeadDocument {
+  id: string;
+  name: string;
+  category: string;
+  status: 'recibido' | 'en_revision' | 'aprobado' | 'pendiente';
+  uploadDate: string;
+  size?: string;
+  fileUrl?: string;
+}
+
 export interface Lead {
   id: string;
   fullName: string;
@@ -120,6 +148,10 @@ export interface Lead {
   riskSummary: string;
   riskItems: RiskItem[];
   internalNotes: InternalNote[];
+  assignedLawyer?: string;
+  linkedProcessId?: string;
+  budget?: LeadBudget;
+  documents?: LeadDocument[];
 }
 
 export interface ServiceDetail {

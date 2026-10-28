@@ -34,6 +34,7 @@ interface Props {
   onOpenProcess: (process: LegalProcess) => void; 
   onAddContact?: (newLead: Lead) => void;
   onAddNote?: (leadId: string, text: string, author: string) => void;
+  onCreateProcess?: (companyName: string) => void;
 }
 
 const norm = (s?: string) => (s || '').trim().toLowerCase().replace(/\s+/g, ' ');
@@ -46,7 +47,8 @@ export const CompanyRecordView: React.FC<Props> = ({
   onOpenContact, 
   onOpenProcess,
   onAddContact,
-  onAddNote
+  onAddNote,
+  onCreateProcess
 }) => {
   const [activeTab, setActiveTab] = useState<'contacts' | 'processes' | 'notes'>('contacts');
   const [expandedHistory, setExpandedHistory] = useState<string | null>(null);
@@ -425,8 +427,20 @@ export const CompanyRecordView: React.FC<Props> = ({
               </p>
             </div>
 
-            {/* Subfilters */}
-            <div className="flex items-center gap-1.5 p-1 bg-slate-100 rounded-lg border border-slate-200 text-xs font-semibold">
+            <div className="flex items-center gap-2 flex-wrap self-start sm:self-auto">
+              {onCreateProcess && (
+                <button
+                  type="button"
+                  onClick={() => onCreateProcess(company)}
+                  className="inline-flex items-center gap-1.5 text-xs font-bold text-white bg-[#0071ce] hover:bg-[#005ba7] px-3 py-1.5 rounded-lg shadow-xs transition-colors cursor-pointer"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Nuevo Expediente</span>
+                </button>
+              )}
+
+              {/* Subfilters */}
+              <div className="flex items-center gap-1.5 p-1 bg-slate-100 rounded-lg border border-slate-200 text-xs font-semibold">
               <button
                 type="button"
                 onClick={() => setProcessFilter('all')}
@@ -456,6 +470,7 @@ export const CompanyRecordView: React.FC<Props> = ({
               </button>
             </div>
           </div>
+        </div>
 
           <div className="space-y-3">
             {visibleProcesses.map((proc) => {
@@ -605,12 +620,24 @@ export const CompanyRecordView: React.FC<Props> = ({
             })}
 
             {visibleProcesses.length === 0 && (
-              <div className="p-8 text-center bg-white rounded-xl border border-slate-200">
+              <div className="p-8 text-center bg-white rounded-xl border border-slate-200 space-y-3">
                 <FileText className="mx-auto h-8 w-8 text-slate-300" />
-                <p className="mt-2 text-sm font-bold text-slate-800">No hay expedientes en esta categoría</p>
-                <p className="mt-1 text-xs text-slate-500">
-                  Los trámites que se abran para {company} aparecerán aquí.
-                </p>
+                <div>
+                  <p className="text-sm font-bold text-slate-800">No hay expedientes en esta categoría</p>
+                  <p className="mt-1 text-xs text-slate-500">
+                    Apertura un trámite legal para {company} para registrar tareas, documentos y avances en vivo.
+                  </p>
+                </div>
+                {onCreateProcess && (
+                  <button
+                    type="button"
+                    onClick={() => onCreateProcess(company)}
+                    className="inline-flex items-center gap-2 bg-[#0071ce] hover:bg-[#005ba7] text-white px-4 py-2 rounded-lg text-xs font-bold shadow-xs transition-colors cursor-pointer"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>⚡ Aperturar Expediente para {company}</span>
+                  </button>
+                )}
               </div>
             )}
           </div>

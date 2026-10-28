@@ -413,7 +413,65 @@ export const INITIAL_LEADS: Lead[] = [
         text: 'Prospecto con excelente volumen de pedidos semanales. Requieren propuesta rápida para que no firmen contratos genéricos de internet.',
         timestamp: '2026-10-20 09:40'
       }
-    ]
+    ],
+    assignedLawyer: 'José Rafael Vásquez',
+    documents: [
+      {
+        id: 'doc-1',
+        name: 'RIF_Fiscal_UrbanBite_J501239842.pdf',
+        category: 'Fiscal & Identificación',
+        status: 'aprobado',
+        uploadDate: '2026-10-20',
+        size: '1.2 MB'
+      },
+      {
+        id: 'doc-2',
+        name: 'Borrador_Contrato_Repartidores_Actual.docx',
+        category: 'Laboral',
+        status: 'en_revision',
+        uploadDate: '2026-10-20',
+        size: '420 KB'
+      },
+      {
+        id: 'doc-3',
+        name: 'Logo_UrbanBite_Vector_SAPI.png',
+        category: 'Propiedad Intelectual',
+        status: 'recibido',
+        uploadDate: '2026-10-20',
+        size: '2.8 MB'
+      }
+    ],
+    budget: {
+      items: [
+        {
+          id: 'bi-1',
+          concept: 'Estructuración y Redacción de Contrato Marco de Prestación de Servicios (Flota)',
+          area: 'Laboral',
+          quantity: 1,
+          unitPrice: 380
+        },
+        {
+          id: 'bi-2',
+          concept: 'Búsqueda Fonética y Registro de Marca ante SAPI (Clase 39)',
+          area: 'Propiedad Intelectual',
+          quantity: 1,
+          unitPrice: 280
+        },
+        {
+          id: 'bi-3',
+          concept: 'Redacción de Pacto de Socios y Acuerdo de Accionistas (Vesting & Drag-Along)',
+          area: 'Corporativo',
+          quantity: 1,
+          unitPrice: 380
+        }
+      ],
+      currency: 'USD',
+      discount: 50,
+      notes: 'Forma de pago: 50% de anticipo al formalizar y 50% al cierre y entrega de instrumentos.',
+      status: 'borrador',
+      createdAt: '2026-10-20',
+      validUntil: '2026-11-15'
+    }
   },
   {
     id: 'lead-7',
@@ -440,7 +498,8 @@ export const INITIAL_LEADS: Lead[] = [
         text: 'Contacto administrativo añadido para enlace de recaudos societarios y revisión de pólizas.',
         timestamp: '2026-10-21 11:45'
       }
-    ]
+    ],
+    assignedLawyer: 'José Rafael Vásquez'
   },
   {
     id: 'lead-2',
