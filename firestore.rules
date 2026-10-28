@@ -1,0 +1,231 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default deny: every collection must have an explicit policy.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        (request.auth.token.email != null && (
+          request.auth.token.email == 'binlegal.digital@gmail.com' ||
+          request.auth.token.email == 'anat.vacaviejavzla@gmail.com' ||
+          request.auth.token.email == 'contacto@binlegal.com'
+        ))
+      );
+    }
+
+    function hasUserProfile() {
+      return isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function role() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+    }
+
+    function isStaff() {
+      return isAdmin() || (hasUserProfile() && role() in ['lawyer', 'supervisor', 'intern', 'secretary']);
+    }
+
+    function processExists(processId) {
+      return exists(/databases/$(database)/documents/processes/$(processId));
+    }
+
+    function processData(processId) {
+      return get(/databases/$(database)/documents/processes/$(processId)).data;
+    }
+
+    function canAccessProcessData(data) {
+      return isSignedIn() && (
+        data.userId == request.auth.uid ||
+        isAdmin() ||
+        (isStaff() && (
+          data.assignedLawyerId == request.auth.uid ||
+          data.caseLeadUid == request.auth.uid ||
+          data.supervisorUid == request.auth.uid ||
+          ('assignedLawyerIds' in data && data.assignedLawyerIds.hasAny([request.auth.uid]))
+        ))
+      );
+    }
+
+    function canAccessProcess(processId) {
+      return processExists(processId) && canAccessProcessData(processData(processId));
+    }
+
+    function isCaseLead(processId) {
+      return isAdmin() || (
+        canAccessProcess(processId) &&
+        processData(processId).caseLeadUid == request.auth.uid
+      );
+    }
+
+    // Admin identity registry.
+    match /admins/{adminId} {
+      allow get: if isOwner(adminId) || isAdmin();
+      allow list: if isAdmin();
+      allow create, update, delete: if isAdmin();
+    }
+
+    // User profiles. A user cannot promote their own account or change its role.
+    match /users/{userId} {
+      allow get: if isOwner(userId) || isAdmin();
+      allow list: if isAdmin();
+      allow create: if isOwner(userId) &&
+        request.resource.data.userId == userId &&
+        (request.resource.data.role == 'client' || isAdmin());
+      allow update: if isAdmin() || (
+        isOwner(userId) &&
+        request.resource.data.role == resource.data.role &&
+        request.resource.data.userId == resource.data.userId &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'displayName', 'companyName', 'industry', 'sectors',
+          'isSubscribedNewsletter', 'username', 'phone', 'updatedAt'
+        ])
+      );
+      allow delete: if isAdmin();
+    }
+
+    // Legal cases / processes. Clients own their records; internal staff require an
+    // explicit case assignment, lead assignment, or supervisor assignment.
+    match /processes/{processId} {
+      allow get, list: if canAccessProcessData(resource.data);
+      allow create: if isSignedIn() && (
+        isAdmin() ||
+        (request.resource.data.userId == request.auth.uid &&
+         (!('assignedLawyerId' in request.resource.data) || request.resource.data.assignedLawyerId == null))
+      );
+      allow update: if isAdmin() || (
+        isStaff() &&
+        canAccessProcessData(resource.data) &&
+        request.resource.data.userId == resource.data.userId &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'status', 'progress', 'nextMilestone', 'updatedAt', 'milestones',
+          'documents', 'targetDate'
+        ])
+      );
+      allow delete: if isAdmin();
+    }
+
+    // Workflow tasks are always tied to a case. Client-visible tasks can be read
+    // by that case's client; internal tasks are restricted to assigned staff/admin.
+    match /workflowTasks/{taskId} {
+      allow get, list: if isAdmin() || (
+        isSignedIn() && canAccessProcess(resource.data.caseId) &&
+        (isStaff() || (resource.data.clientId == request.auth.uid && resource.data.visibility == 'client'))
+      );
+      allow create: if isStaff() &&
+        canAccessProcess(request.resource.data.caseId) &&
+        request.resource.data.createdByUid == request.auth.uid;
+      allow update: if isAdmin() || (
+        isStaff() &&
+        canAccessProcess(resource.data.caseId) &&
+        request.resource.data.caseId == resource.data.caseId &&
+        request.resource.data.clientId == resource.data.clientId &&
+        (
+          !request.resource.data.diff(resource.data).affectedKeys().hasAny(['assignedToUid', 'assignedToName']) ||
+          (isCaseLead(resource.data.caseId) && request.resource.data.reassignmentStatus == 'approved')
+        ) &&
+        (
+          !('reassignmentStatus' in request.resource.data) ||
+          request.resource.data.reassignmentStatus == resource.data.reassignmentStatus ||
+          request.resource.data.reassignmentStatus == 'pending_approval' ||
+          (request.resource.data.reassignmentStatus == 'approved' && isCaseLead(resource.data.caseId)) ||
+          (request.resource.data.reassignmentStatus == 'rejected' && isCaseLead(resource.data.caseId))
+        )
+      );
+      allow delete: if isAdmin();
+    }
+
+    // Comments have separate internal/client visibility.
+    match /workflowComments/{commentId} {
+      allow get, list: if isAdmin() || (
+        isSignedIn() && canAccessProcess(resource.data.caseId) &&
+        (isStaff() || (resource.data.visibility == 'client' && processData(resource.data.caseId).userId == request.auth.uid))
+      );
+      allow create: if isSignedIn() &&
+        canAccessProcess(request.resource.data.caseId) &&
+        request.resource.data.authorUid == request.auth.uid &&
+        (
+          isStaff() ||
+          (request.resource.data.visibility == 'client' &&
+           processData(request.resource.data.caseId).userId == request.auth.uid)
+        );
+      allow update, delete: if isAdmin();
+    }
+
+    // Append-only activity history; client view is filtered by visibility.
+    match /caseActivity/{activityId} {
+      allow get, list: if isAdmin() || (
+        isSignedIn() && canAccessProcess(resource.data.caseId) &&
+        (isStaff() || (resource.data.visibility == 'client' && processData(resource.data.caseId).userId == request.auth.uid))
+      );
+      allow create: if isSignedIn() &&
+        canAccessProcess(request.resource.data.caseId) &&
+        request.resource.data.actorUid == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    // Leads / public diagnostic intake.
+    match /leads/{leadId} {
+      allow create: if true;
+      allow read, update, delete: if isAdmin();
+    }
+
+    // Username lookup only returns the minimal account lookup fields.
+    match /usernames/{username} {
+      allow get: if true;
+      allow list: if false;
+      allow create, update: if isSignedIn() &&
+        request.resource.data.userId == request.auth.uid;
+      allow delete: if isAdmin();
+    }
+
+    // Newsletter subscribers.
+    match /subscribers/{subscriberId} {
+      allow create: if true;
+      allow get, list: if isAdmin();
+      allow update, delete: if isAdmin();
+    }
+
+    // Document metadata. Binary storage access is configured separately and must
+    // not be opened until Storage rules are aligned with this case-level policy.
+    match /clientDocuments/{documentId} {
+      allow get, list: if isAdmin() || (
+        isSignedIn() && canAccessProcess(resource.data.caseId) &&
+        (isStaff() ||
+          (resource.data.clientId == request.auth.uid && resource.data.visibleToClient == true && resource.data.status == 'delivered') ||
+          (resource.data.uploadedByUid == request.auth.uid && resource.data.clientId == request.auth.uid))
+      );
+      allow create: if isSignedIn() && (
+        (isStaff() &&
+          canAccessProcess(request.resource.data.caseId) &&
+          request.resource.data.uploadedByUid == request.auth.uid) ||
+        (processExists(request.resource.data.caseId) &&
+          processData(request.resource.data.caseId).userId == request.auth.uid &&
+          request.resource.data.clientId == request.auth.uid &&
+          request.resource.data.uploadedByUid == request.auth.uid &&
+          request.resource.data.kind == 'client_upload' &&
+          request.resource.data.status == 'received' &&
+          request.resource.data.visibleToClient == false)
+      );
+      allow update: if isAdmin() || (
+        isStaff() &&
+        canAccessProcess(resource.data.caseId) &&
+        request.resource.data.caseId == resource.data.caseId &&
+        request.resource.data.clientId == resource.data.clientId &&
+        request.resource.data.uploadedByUid == resource.data.uploadedByUid
+      );
+      allow delete: if isAdmin();
+    }
+  }
+}

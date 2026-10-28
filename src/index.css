@@ -1,0 +1,147 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: 'Work Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-display: 'Work Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+
+  /* BinLegal Brand Palette - Pantone 446 C (#3e4543) */
+  --color-brand-charcoal-50: #f4f5f5;
+  --color-brand-charcoal-100: #e7e8e8;
+  --color-brand-charcoal-200: #cfd1d0;
+  --color-brand-charcoal-300: #b2b6b5;
+  --color-brand-charcoal-400: #888d8b;
+  --color-brand-charcoal-500: #626967;
+  --color-brand-charcoal-600: #4f5553;
+  --color-brand-charcoal-700: #444a48;
+  --color-brand-charcoal-800: #3e4543; /* Pantone 446 C Primary */
+  --color-brand-charcoal-900: #323836;
+  --color-brand-charcoal-950: #212524;
+
+  /* BinLegal Brand Palette - Pantone 285 C (#0071ce) */
+  --color-brand-blue-50: #f0f7fd;
+  --color-brand-blue-100: #e0effb;
+  --color-brand-blue-200: #b9ddf6;
+  --color-brand-blue-300: #7cc3f0;
+  --color-brand-blue-400: #37a5e8;
+  --color-brand-blue-500: #0071ce; /* Pantone 285 C Primary */
+  --color-brand-blue-600: #0060b0;
+  --color-brand-blue-700: #004f91;
+  --color-brand-blue-800: #044378;
+  --color-brand-blue-900: #093963;
+  --color-brand-blue-950: #052442;
+
+  /* Institutional Law Firm Deep Navy & Slate */
+  --color-corporate-navy-950: #080f1a;
+  --color-corporate-navy-900: #0b192c;
+  --color-corporate-navy-850: #0f223d;
+  --color-corporate-navy-800: #132b4d;
+  --color-corporate-navy-700: #1c3c69;
+
+  /* Semantic shortcuts */
+  --color-bin-charcoal: #3e4543;
+  --color-legal-blue: #0071ce;
+  --color-corporate-navy: #0b192c;
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    font-family: 'Work Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    color: #3e4543;
+    overflow-x: clip;
+    width: 100%;
+    max-width: 100%;
+  }
+
+  body {
+    font-family: 'Work Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    color: #3e4543;
+    background-color: #ffffff;
+    overflow-x: clip;
+    width: 100%;
+    max-width: 100%;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  ::selection {
+    background-color: #0071ce;
+    color: #ffffff;
+  }
+}
+
+.font-display {
+  font-family: 'Work Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+/* Custom BinLegal Brand Utilities */
+.bg-bin-charcoal {
+  background-color: #3e4543;
+}
+
+.text-bin-charcoal {
+  color: #3e4543;
+}
+
+.border-bin-charcoal {
+  border-color: #3e4543;
+}
+
+.bg-legal-blue {
+  background-color: #0071ce;
+}
+
+.text-legal-blue {
+  color: #0071ce;
+}
+
+.border-legal-blue {
+  border-color: #0071ce;
+}
+
+.hover\:bg-legal-blue-dark:hover {
+  background-color: #0060b0;
+}
+
+
+/* CRM-only interaction language: clear hover, focus and pressed feedback. */
+.crm-workspace button,
+.crm-workspace a,
+.crm-workspace [role="button"],
+.crm-workspace [tabindex]:not([tabindex="-1"]) {
+  transition:
+    color 160ms ease,
+    background-color 160ms ease,
+    border-color 160ms ease,
+    box-shadow 180ms ease,
+    transform 180ms ease;
+}
+
+.crm-workspace button:hover:not(:disabled),
+.crm-workspace a:hover,
+.crm-workspace [role="button"]:hover,
+.crm-workspace [tabindex]:not([tabindex="-1"]):hover {
+  box-shadow: 0 5px 16px rgb(11 25 44 / 10%);
+}
+
+.crm-workspace button:active:not(:disabled),
+.crm-workspace [role="button"]:active {
+  transform: translateY(1px);
+}
+
+.crm-workspace button:focus-visible,
+.crm-workspace a:focus-visible,
+.crm-workspace [role="button"]:focus-visible,
+.crm-workspace [tabindex]:not([tabindex="-1"]):focus-visible {
+  outline: 3px solid rgb(0 113 206 / 55%);
+  outline-offset: 3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .crm-workspace button,
+  .crm-workspace a,
+  .crm-workspace [role="button"],
+  .crm-workspace [tabindex]:not([tabindex="-1"]) {
+    transition: none;
+  }
+}

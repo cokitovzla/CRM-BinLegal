@@ -1,0 +1,174 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Perfil de usuario o cliente registrado en BinLegal",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "UID único de Firebase Auth"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "Correo electrónico del usuario"
+        },
+        "displayName": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "Nombre completo del usuario"
+        },
+        "companyName": {
+          "type": "string",
+          "maxLength": 120,
+          "description": "Nombre de la empresa o PYME"
+        },
+        "username": {
+          "type": "string",
+          "maxLength": 50,
+          "description": "Nombre de usuario o identificador de acceso alfanumérico"
+        },
+        "industry": {
+          "type": "string",
+          "description": "Sector o industria principal de la empresa (hasta 3 seleccionados o especificado en Otro)"
+        },
+        "sectors": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Lista de hasta 3 sectores o industrias seleccionados"
+        },
+        "isSubscribedNewsletter": {
+          "type": "boolean",
+          "description": "Indica si está suscrito al boletín y publicaciones legales"
+        },
+        "role": {
+          "type": "string",
+          "enum": ["client", "admin"],
+          "description": "Rol en la plataforma"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Fecha de registro ISO"
+        }
+      },
+      "required": ["userId", "email", "displayName", "role"]
+    },
+    "LegalProcess": {
+      "title": "LegalProcess",
+      "description": "Expediente o trámite legal/administrativo de un cliente",
+      "type": "object",
+      "properties": {
+        "processId": {
+          "type": "string",
+          "description": "Identificador único del proceso"
+        },
+        "userId": {
+          "type": "string",
+          "description": "UID del cliente propietario del proceso"
+        },
+        "clientEmail": {
+          "type": "string",
+          "description": "Correo del cliente para notificaciones"
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 150,
+          "description": "Nombre del trámite o proceso legal"
+        },
+        "category": {
+          "type": "string",
+          "enum": ["Corporativo", "Propiedad Intelectual", "Regulatorio", "Laboral", "Administrativo & Notarial", "Mediación"],
+          "description": "Categoría legal o administrativa"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["recaudos", "redaccion", "tramite_publico", "revision", "completado"],
+          "description": "Fase actual del proceso"
+        },
+        "progress": {
+          "type": "number",
+          "description": "Porcentaje de avance (0 a 100)"
+        },
+        "assignedLawyer": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "Abogado responsable en BinLegal"
+        },
+        "nextMilestone": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Próximo hito o entrega"
+        },
+        "targetDate": {
+          "type": "string",
+          "description": "Fecha estimada de finalización"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Fecha de apertura del expediente"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "Fecha de última actualización"
+        }
+      },
+      "required": ["processId", "userId", "title", "category", "status", "progress"]
+    },
+    "Admin": {
+      "title": "Admin",
+      "description": "Documento que autoriza privilegios de administración para BinLegal",
+      "type": "object",
+      "properties": {
+        "adminId": {
+          "type": "string",
+          "description": "UID de Firebase Auth del administrador"
+        },
+        "email": {
+          "type": "string",
+          "description": "Correo del administrador"
+        },
+        "grantedAt": {
+          "type": "string",
+          "description": "Fecha de asignación"
+        }
+      },
+      "required": ["adminId", "email"]
+    },
+    "Lead": {
+      "title": "Lead",
+      "description": "Prospecto generado por diagnóstico o formulario de contacto",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "fullName": { "type": "string" },
+        "email": { "type": "string" },
+        "company": { "type": "string" },
+        "industry": { "type": "string" },
+        "stage": { "type": "string" },
+        "status": { "type": "string" },
+        "calculatedRiskScore": { "type": "number" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "fullName", "email", "company", "status"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Perfiles privados de los usuarios y clientes"
+    },
+    "/processes/{processId}": {
+      "schema": { "$ref": "#/entities/LegalProcess" },
+      "description": "Expedientes y trámites legales y administrativos gestionados por BinLegal"
+    },
+    "/admins/{adminId}": {
+      "schema": { "$ref": "#/entities/Admin" },
+      "description": "Lista de administradores autorizados de BinLegal"
+    },
+    "/leads/{leadId}": {
+      "schema": { "$ref": "#/entities/Lead" },
+      "description": "Prospectos de diagnósticos legales y solicitudes para el CRM de José Rafael Vásquez"
+    }
+  }
+}
