@@ -49,7 +49,7 @@ export const ClientRecordView: React.FC<ClientRecordViewProps> = ({
   onCreateProcess
 }) => {
   const [note, setNote] = useState('');
-  const [author, setAuthor] = useState('José Rafael Vásquez');
+  const [author, setAuthor] = useState('Elena Marín');
   const [copiedEmail, setCopiedEmail] = useState(false);
 
   // Processes linked directly to this person or their company
@@ -412,7 +412,7 @@ export const ClientRecordView: React.FC<ClientRecordViewProps> = ({
                 <MessageSquare className="h-4 w-4 text-[#0071ce]" />
                 <h2 className="text-sm font-bold text-slate-900">Notas Internas Confidenciales</h2>
               </div>
-              <span className="text-xs text-slate-400">Solo visible para el equipo BinLegal</span>
+              <span className="text-xs text-slate-400">Solo visible para el equipo JurisNova</span>
             </div>
 
             <form 

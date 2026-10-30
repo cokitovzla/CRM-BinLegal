@@ -11,6 +11,7 @@ import {
 } from 'firebase/auth';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { auth, db, handleFirestoreError, OperationType } from '../lib/firebase';
+import { isVerifiedAdminEmail } from '../lib/authPolicy';
 import { UserProfile } from '../types';
 
 interface AuthContextType {
@@ -57,10 +58,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           if (snap.exists()) {
             setUserProfile(snap.data() as UserProfile);
           } else {
-            const isAdminEmail = 
-              user.email === 'binlegal.digital@gmail.com' || 
-              user.email === 'anat.vacaviejavzla@gmail.com' || 
-              user.email?.includes('binlegal.com');
+            const isAdminEmail = isVerifiedAdminEmail(user.email, user.emailVerified);
             const newProfile: UserProfile = {
               userId: user.uid,
               email: user.email || '',
@@ -75,10 +73,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         } catch (err) {
           console.warn('Could not read user profile from Firestore:', err);
           // Fallback memory profile
-          const isAdminEmail = 
-            user.email === 'binlegal.digital@gmail.com' || 
-            user.email === 'anat.vacaviejavzla@gmail.com' || 
-            user.email?.includes('binlegal.com');
+          const isAdminEmail = isVerifiedAdminEmail(user.email, user.emailVerified);
           setUserProfile({
             userId: user.uid,
             email: user.email || '',
@@ -121,11 +116,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     // Quick demo username handling
     // Demo administrator shortcuts are development-only; never treat them as real production authentication.
-    if (import.meta.env.DEV && (cleanUser === 'admin' || cleanUser === 'joserafael' || cleanUser === 'jrv')) {
+    const previewMode = window.location.pathname.replace(/\/$/, '') === '/crm-preview';
+    if (previewMode && (cleanUser === 'admin' || cleanUser === 'joserafael' || cleanUser === 'jrv')) {
       loginAsDemoAdmin();
       return;
     }
-    if (cleanUser === 'demo' || cleanUser === 'sofia' || cleanUser === 'cliente') {
+    if (previewMode && (cleanUser === 'demo' || cleanUser === 'sofia' || cleanUser === 'cliente')) {
       loginAsDemoClient();
       return;
     }
@@ -190,7 +186,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         ...(sectors && sectors.length > 0 ? { sectors } : {}),
         ...(cleanUser ? { username: cleanUser } : {}),
         isSubscribedNewsletter: subscribeNewsletterOptIn,
-        role: cleanEmail === 'anat.vacaviejavzla@gmail.com' ? 'admin' : 'client',
+        role: 'client',
         createdAt: new Date().toISOString()
       };
       
@@ -276,6 +272,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // Demo helpers for instant evaluation without typing passwords
   const loginAsDemoClient = () => {
+    if (window.location.pathname.replace(/\/$/, '') !== '/crm-preview') {
+      throw new Error('El acceso ficticio solo está disponible en la maqueta /crm-preview.');
+    }
     const demoClient: UserProfile = {
       userId: 'demo-client-uid-01',
       email: 'sofia@koragroup.ve',
@@ -296,6 +295,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const loginAsDemoAdmin = () => {
+    if (window.location.pathname.replace(/\/$/, '') !== '/crm-preview') {
+      throw new Error('El acceso ficticio solo está disponible en la maqueta /crm-preview.');
+    }
     const demoAdmin: UserProfile = {
       userId: 'demo-admin-uid-01',
       email: 'anat.vacaviejavzla@gmail.com',
@@ -312,7 +314,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } as User);
   };
 
-  const isAdmin = userProfile?.role === 'admin' || currentUser?.email === 'anat.vacaviejavzla@gmail.com';
+  const isAdmin = userProfile?.role === 'admin' || isVerifiedAdminEmail(currentUser?.email, currentUser?.emailVerified === true);
 
   return (
     <AuthContext.Provider

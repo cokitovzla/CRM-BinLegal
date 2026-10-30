@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
-import { LegalProcess, ProcessStatus } from '../types';
+import { LegalProcess, ProcessStatus, Lead, LegalArea } from '../types';
 import { useAuth } from '../context/AuthContext';
-import { processService } from '../services/processService';
 import { CaseDocumentLibrary } from './CaseDocumentLibrary';
+import { CaseMessages } from './CaseMessages';
 import { 
   Building, 
   FileText, 
@@ -23,7 +23,7 @@ import {
 
 interface ClientPortalProps {
   processes: LegalProcess[];
-  onOpenNewProcessModal?: () => void;
+  onRequestService: (lead: Lead) => Promise<boolean>;
   onBackToLanding: () => void;
 }
 
@@ -37,6 +37,7 @@ const PROCESS_STEPS: Array<{ id: ProcessStatus; label: string; desc: string }> =
 
 export const ClientPortal: React.FC<ClientPortalProps> = ({
   processes,
+  onRequestService,
   onBackToLanding
 }) => {
   const { userProfile, currentUser, logout } = useAuth();
@@ -50,6 +51,8 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
   const [newCategory, setNewCategory] = useState<LegalProcess['category']>('Corporativo');
   const [newNotes, setNewNotes] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submissionError, setSubmissionError] = useState('');
+  const [requestSent, setRequestSent] = useState(false);
 
   const categories = ['Todos', 'Corporativo', 'Propiedad Intelectual', 'Regulatorio', 'Laboral', 'Administrativo & Notarial'];
 
@@ -72,38 +75,32 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
   const handleCreateNewProcess = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newTitle.trim()) return;
+    if (!currentUser?.email) {
+      setSubmissionError('Tu cuenta necesita un correo para enviar la solicitud. Contacta al despacho.');
+      return;
+    }
 
     setIsSubmitting(true);
-    const newProc: LegalProcess = {
-      id: `proc-${Date.now()}`,
-      userId: currentUser?.uid || userProfile?.userId || 'demo-client-uid-01',
-      clientEmail: currentUser?.email || userProfile?.email || 'cliente@binlegal.com',
-      clientName: userProfile?.displayName || 'Cliente',
-      companyName: userProfile?.companyName || 'Empresa PYME',
-      title: newTitle,
-      category: newCategory,
-      status: 'recaudos',
-      progress: 15,
-      assignedLawyer: 'José Rafael Vásquez & Equipo',
-      nextMilestone: 'Revisión y solicitud de recaudos iniciales',
-      targetDate: '15 días hábiles',
-      documents: [
-        { name: 'Ficha_Apertura_Expediente.pdf', category: 'General', date: new Date().toISOString().slice(0, 10), status: 'en_revision' }
-      ],
-      milestones: [
-        { date: new Date().toISOString().slice(0, 10), title: 'Solicitud ingresada en plataforma', note: newNotes || 'Expediente creado en línea.' }
-      ],
-      createdAt: new Date().toISOString().slice(0, 10),
-      updatedAt: new Date().toISOString().slice(0, 10)
+    setSubmissionError('');
+    const area: LegalArea = newCategory === 'Administrativo & Notarial' ? 'Asesoría General' : newCategory;
+    const request: Lead = {
+      id: crypto.randomUUID(), fullName: userProfile?.displayName || currentUser.email,
+      email: currentUser.email, company: userProfile?.companyName || 'Consulta particular',
+      industry: userProfile?.industry || 'No indicado', stage: 'En crecimiento',
+      areasOfInterest: [area], notes: `${newTitle.trim()}${newNotes.trim() ? ` — ${newNotes.trim()}` : ''}`,
+      status: 'nuevo_lead', createdAt: new Date().toISOString(), calculatedRiskScore: 0,
+      riskSummary: 'Solicitud de servicio recibida desde el portal del cliente; pendiente de evaluación comercial.',
+      riskItems: [], internalNotes: []
     };
 
     try {
-      await processService.createProcess(newProc);
+      if (!await onRequestService(request)) throw new Error('No se confirmó el registro de la solicitud.');
       setShowNewModal(false);
+      setRequestSent(true);
       setNewTitle('');
       setNewNotes('');
     } catch (err) {
-      console.error(err);
+      setSubmissionError(err instanceof Error ? err.message : 'No pudimos enviar la solicitud. Intenta de nuevo.');
     } finally {
       setIsSubmitting(false);
     }
@@ -156,7 +153,7 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                 className="px-3.5 py-2 bg-[#0071ce] hover:bg-[#0060b0] text-white rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 shadow-xs whitespace-nowrap cursor-pointer active:scale-95"
               >
                 <Plus className="w-4 h-4" />
-                <span>Solicitar Nuevo Trámite</span>
+                <span>Solicitar un servicio</span>
               </button>
 
               <button
@@ -408,6 +405,7 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                     </div>
 
                     <CaseDocumentLibrary process={proc} />
+                    <div className="mt-4"><CaseMessages process={proc} /></div>
 
                     {/* Milestones log */}
                     <div>
@@ -457,21 +455,22 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
 
       </div>
 
-      {/* NEW PROCESS REQUEST MODAL */}
+      {requestSent && <p role="status" className="fixed bottom-4 left-4 right-4 z-40 mx-auto max-w-lg rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900 shadow-lg">Solicitud recibida. El despacho revisará el servicio antes de abrir un trámite. <button type="button" className="ml-2 underline" onClick={() => setRequestSent(false)}>Cerrar</button></p>}
+      {/* NEW SERVICE REQUEST MODAL */}
       {showNewModal && (
         <div 
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-neutral-950/60 backdrop-blur-xs animate-in fade-in"
+          className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto p-3 sm:p-4 bg-neutral-950/60 backdrop-blur-xs animate-in fade-in"
           role="dialog"
           aria-modal="true"
         >
-          <div className="bg-white w-full max-w-lg rounded-2xl border border-neutral-200 shadow-2xl p-6 sm:p-8">
+          <div className="bg-white w-full max-w-lg max-h-[calc(100dvh-1.5rem)] overflow-y-auto rounded-2xl border border-neutral-200 shadow-2xl p-5 sm:p-8">
             <div className="flex items-start justify-between mb-6">
               <div>
                 <h3 className="text-xl font-display font-extrabold text-neutral-950">
-                  Solicitar Nuevo Proceso Legal o Administrativo
+                  Solicitar un servicio legal
                 </h3>
                 <p className="text-xs text-neutral-500 mt-1">
-                  José Rafael Vásquez y su equipo abrirán el expediente y te asignarán un abogado líder.
+                  Cuéntanos qué necesitas. El despacho evaluará la solicitud y te presentará una propuesta antes de abrir el trámite.
                 </p>
               </div>
               <button
@@ -528,7 +527,8 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                 />
               </div>
 
-              <div className="pt-4 border-t border-neutral-200 flex items-center justify-end gap-2">
+              {submissionError && <p role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-800">{submissionError}</p>}
+              <div className="pt-4 border-t border-neutral-200 flex flex-wrap items-center justify-end gap-2">
                 <button
                   type="button"
                   onClick={() => setShowNewModal(false)}
@@ -541,7 +541,7 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                   disabled={isSubmitting}
                   className="px-5 py-2 font-semibold text-white bg-neutral-900 rounded-lg hover:bg-neutral-800 transition-colors shadow-xs"
                 >
-                  {isSubmitting ? 'Registrando...' : 'Abrir Expediente'}
+                  {isSubmitting ? 'Enviando...' : 'Enviar solicitud'}
                 </button>
               </div>
             </form>

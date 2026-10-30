@@ -1,0 +1,28 @@
+import { ViewModeSwitch, useViewMode } from './ViewModeSwitch';
+import {useState} from 'react';
+import type {Lead} from '../types';
+import {formatCrmDate} from '../lib/dates';
+export type MeetingAgendaFilter = 'scheduled'|'completed'|'cancelled'|'all';
+export function MeetingAgenda({leads,onOpen,filter:controlledFilter,onFilterChange}:{leads:Lead[];onOpen:(lead:Lead)=>void;filter?:MeetingAgendaFilter;onFilterChange?:(filter:MeetingAgendaFilter)=>void}) {
+ const [viewMode,setViewMode]=useViewMode('agenda');
+ const [localFilter,setLocalFilter]=useState<MeetingAgendaFilter>('scheduled');
+ const filter=controlledFilter??localFilter;
+ const setFilter=(value:MeetingAgendaFilter)=>{setLocalFilter(value);onFilterChange?.(value);};
+ const rows=leads.filter(lead=>lead.commercial?.meeting).filter(lead=>filter==='all'||lead.commercial?.meeting?.status===filter).sort((a,b)=>a.commercial!.meeting!.at.localeCompare(b.commercial!.meeting!.at));
+ const meetings=leads.filter(lead=>lead.commercial?.meeting);
+ const filters=[
+  {id:'scheduled' as const,label:'Agendadas',description:'Próximas reuniones'},
+  {id:'completed' as const,label:'Realizadas',description:'Reuniones atendidas'},
+  {id:'cancelled' as const,label:'Canceladas',description:'Reuniones canceladas'},
+  {id:'all' as const,label:'Todas las reuniones',description:'Historial completo'}
+ ];
+ return <section className="space-y-5">
+  <p className="text-xs text-slate-500">Reuniones vinculadas a solicitudes. El horario se muestra en Caracas.</p>
+  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">{filters.map(item=><button key={item.id} type="button" onClick={()=>setFilter(item.id)} aria-pressed={filter===item.id} className={'rounded-xl border p-4 text-left shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 '+(filter===item.id?'border-blue-500 bg-blue-50 ring-2 ring-blue-200':'border-slate-200 bg-white hover:border-blue-300')}><div className="text-xs font-semibold tracking-wide text-slate-700">{item.label}</div><div className="mt-1 text-2xl font-extrabold tabular-nums text-blue-800">{item.id==='all'?meetings.length:meetings.filter(lead=>lead.commercial?.meeting?.status===item.id).length}</div><div className="mt-1 text-xs text-slate-500">{item.description}</div></button>)}</div>
+  <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm"><div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 p-4"><div><h2 className="text-sm font-bold text-slate-900">{filters.find(item=>item.id===filter)?.label}</h2><p className="mt-1 text-xs text-slate-500">Abre la solicitud para consultar o actualizar la reunión.</p></div><span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">{rows.length} {rows.length===1?'reunión':'reuniones'}</span><ViewModeSwitch mode={viewMode} onChange={setViewMode}/></div>
+   <div className={viewMode==='cards'?'grid gap-3 p-3 sm:grid-cols-2 xl:grid-cols-3':'hidden'}>{rows.map(lead=>{const meeting=lead.commercial!.meeting!;return <article key={lead.id} className="min-w-0 rounded-xl border border-slate-200 p-4 shadow-sm"><p className="text-xs font-semibold text-blue-800">{formatCrmDate(meeting.at)}</p><h3 className="mt-2 break-words font-bold text-slate-900">{lead.fullName} · {lead.company||'Consulta particular'}</h3><p className="mt-2 text-xs text-slate-600">{meeting.modality} · {({scheduled:'Agendada',completed:'Realizada',cancelled:'Cancelada'})[meeting.status]}</p>{meeting.location&&<p className="mt-2 break-words text-xs text-slate-600">{meeting.location}</p>}{meeting.note&&<p className="mt-2 whitespace-pre-wrap text-xs text-slate-700">{meeting.note}</p>}<button type="button" onClick={()=>onOpen(lead)} className="mt-3 rounded-lg bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-900 hover:bg-blue-100">Abrir solicitud</button></article>;})}</div>
+   <div className={viewMode==='list'?'overflow-x-auto':'hidden'}><table className="w-full min-w-[800px] table-fixed border-collapse text-left text-xs"><thead><tr className="border-b border-slate-200 bg-slate-50 text-[10px] font-semibold uppercase tracking-wider text-slate-500"><th className="w-[28%] px-4 py-3">Cliente</th><th className="w-[20%] px-4 py-3">Fecha</th><th className="w-[16%] px-4 py-3">Estado</th><th className="w-[22%] px-4 py-3">Modalidad y lugar</th><th className="w-[14%] px-4 py-3 text-right">Acción</th></tr></thead><tbody className="divide-y divide-slate-100">{rows.map(lead=>{const meeting=lead.commercial!.meeting!;return <tr key={lead.id} className="transition-colors hover:bg-blue-50/70"><td className="break-words px-4 py-3 font-semibold text-slate-900">{lead.fullName}<p className="mt-1 text-[11px] font-normal text-slate-500">{lead.company||'Consulta particular'}</p></td><td className="px-4 py-3 text-slate-700">{formatCrmDate(meeting.at)}</td><td className="px-4 py-3"><span className="rounded-full bg-blue-50 px-2 py-1 font-semibold text-blue-900">{({scheduled:'Agendada',completed:'Realizada',cancelled:'Cancelada'})[meeting.status]}</span></td><td className="break-words px-4 py-3 text-slate-700">{meeting.modality}{meeting.location&&<p className="mt-1 text-[11px] text-slate-500">{meeting.location}</p>}</td><td className="px-4 py-3 text-right"><button type="button" onClick={()=>onOpen(lead)} className="rounded-lg border border-blue-200 bg-white px-3 py-2 font-semibold text-blue-800 hover:bg-blue-50 hover:shadow-sm">Abrir solicitud</button></td></tr>;})}</tbody></table></div>
+   {!rows.length&&<p className="border-t border-slate-100 p-8 text-center text-sm text-slate-500">No hay reuniones en esta vista.</p>}
+  </div>
+ </section>;
+}

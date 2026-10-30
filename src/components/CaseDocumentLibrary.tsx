@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from 'react';
-import { addDoc, collection, onSnapshot, query, updateDoc, doc, where } from 'firebase/firestore';
-import { getDownloadURL, getStorage, ref, uploadBytes } from 'firebase/storage';
+import { collection, onSnapshot, query, doc, where, writeBatch } from 'firebase/firestore';
+import { getBlob, getStorage, ref, uploadBytes } from 'firebase/storage';
 import { Download, FileCheck2, FileText, LoaderCircle, Upload, X } from 'lucide-react';
 import { db } from '../lib/firebase';
 import { useAuth } from '../context/AuthContext';
 import type { ClientDocument, LegalProcess } from '../types';
+import {documentVersion,validateDocumentFile} from '../domain/documents';
 
 interface CaseDocumentLibraryProps {
   process: LegalProcess;
@@ -23,6 +24,7 @@ export const CaseDocumentLibrary: React.FC<CaseDocumentLibraryProps> = ({ proces
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [previousId, setPreviousId] = useState('');
 
   useEffect(() => {
     if (demoMode) {
@@ -75,11 +77,16 @@ export const CaseDocumentLibrary: React.FC<CaseDocumentLibraryProps> = ({ proces
     if (!file || (!currentUser && !demoMode)) return;
     setBusy(true); setError(''); setNotice('');
     try {
+      validateDocumentFile(file);
+      const previous=documents.find(item=>item.id===previousId);
+      if(previousId&&!previous)throw new Error('El documento anterior ya no está disponible.');
+      const versionInfo=documentVersion(previous,process.id,process.userId,currentUser?.uid||'demo-admin-uid-01',staffMode);
+      const effectiveKind=previous?.kind||kind;
       if (demoMode) {
         const now = new Date().toISOString();
         const actorUid = currentUser?.uid || 'demo-admin-uid-01';
         const nextDocument: ClientDocument = { id: `demo-document-${Date.now()}`, clientId: process.userId, caseId: process.id, name: file.name, description: description.trim(), category: kind === 'client_upload' ? 'Documento recibido del cliente' : kind === 'final_deliverable' ? 'Documento final' : 'Documento del expediente', kind, status: staffMode ? (kind === 'final_deliverable' ? 'pending_approval' : 'in_review') : 'received', storagePath: 'demo://local-file-not-persisted', contentType: file.type || 'application/octet-stream', sizeBytes: file.size, version: 1, uploadedByUid: actorUid, uploadedByName: userProfile?.displayName || currentUser?.displayName || 'Usuario de demostración', uploadedAt: now, visibleToClient: false };
-        const next = [nextDocument, ...documents]; setDocuments(next); localStorage.setItem(demoKey, JSON.stringify(next));
+        const next = [{...nextDocument,...versionInfo,kind:effectiveKind}, ...documents]; setDocuments(next); localStorage.setItem(demoKey, JSON.stringify(next));
         setFile(null); setDescription('');
         const demoInput = document.getElementById('case-document-file') as HTMLInputElement | null; if (demoInput) demoInput.value = '';
         setNotice('Documento de muestra agregado a la maqueta. El archivo binario no se guarda en modo demostración.');
@@ -91,28 +98,33 @@ export const CaseDocumentLibrary: React.FC<CaseDocumentLibraryProps> = ({ proces
         return;
       }
       const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
-      const storagePath = `client-documents/${process.id}/${currentUser.uid}/${Date.now()}_${safeName}`;
+      const documentRef = doc(collection(db,'clientDocuments'));
+      const storagePath = `client-documents/${process.id}/${currentUser.uid}/${documentRef.id}_${safeName}`;
       const storage = getStorage();
       const objectRef = ref(storage, storagePath);
-      await uploadBytes(objectRef, file, { contentType: file.type || 'application/octet-stream' });
+      await uploadBytes(objectRef, file, { contentType: file.type || 'application/octet-stream',customMetadata:{documentId:documentRef.id} });
       const now = new Date().toISOString();
-      await addDoc(collection(db, 'clientDocuments'), {
+      const batch=writeBatch(db);
+      batch.set(documentRef, {
         clientId: process.userId,
         caseId: process.id,
         name: file.name,
         description: description.trim(),
         category: kind === 'client_upload' ? 'Documento recibido del cliente' : kind === 'final_deliverable' ? 'Documento final' : 'Documento del expediente',
-        kind,
-        status: staffMode ? (kind === 'final_deliverable' ? 'pending_approval' : 'in_review') : 'received',
+        kind:effectiveKind,
+        status: staffMode ? (effectiveKind === 'final_deliverable' ? 'pending_approval' : 'in_review') : 'received',
         storagePath,
         contentType: file.type || 'application/octet-stream',
         sizeBytes: file.size,
-        version: 1,
+        ...versionInfo,
         uploadedByUid: currentUser.uid,
         uploadedByName: userProfile?.displayName || currentUser.displayName || currentUser.email || 'Usuario',
         uploadedAt: now,
         visibleToClient: false,
       });
+      batch.set(doc(collection(db,'caseActivity')), {caseId:process.id,actorUid:currentUser.uid,actorName:userProfile?.displayName||currentUser.email||'Usuario',action:'document_uploaded',summary:`Archivo cargado: ${file.name} · versión ${versionInfo.version}`,visibility:staffMode?'internal':'client',createdAt:now});
+      await batch.commit();
+      setPreviousId('');
       setFile(null); setDescription('');
       const input = document.getElementById('case-document-file') as HTMLInputElement | null;
       if (input) input.value = '';
@@ -126,8 +138,10 @@ export const CaseDocumentLibrary: React.FC<CaseDocumentLibraryProps> = ({ proces
     setError('');
     if (demoMode) { setNotice('Este es un documento de muestra: la maqueta conserva sus metadatos, pero el archivo binario no está disponible para descarga.'); return; }
     try {
-      const url = await getDownloadURL(ref(getStorage(), item.storagePath));
-      window.open(url, '_blank', 'noopener,noreferrer');
+      const blob = await getBlob(ref(getStorage(), item.storagePath));
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a'); link.href=url; link.download=item.name; link.click();
+      setTimeout(()=>URL.revokeObjectURL(url),30000);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'No se pudo abrir el archivo.');
     }
@@ -137,12 +151,16 @@ export const CaseDocumentLibrary: React.FC<CaseDocumentLibraryProps> = ({ proces
     setBusy(true); setError(''); setNotice('');
     try {
       if (demoMode) { const next = documents.map(docItem => docItem.id === item.id ? { ...docItem, status: 'delivered' as const, visibleToClient: true, publishedByUid: currentUser?.uid || 'demo-admin-uid-01', publishedAt: new Date().toISOString() } : docItem); setDocuments(next); localStorage.setItem(demoKey, JSON.stringify(next)); setNotice('Documento de muestra publicado para el cliente.'); setBusy(false); return; }
-      await updateDoc(doc(db, 'clientDocuments', item.id), {
+      if(!currentUser||!process.userId)throw new Error('Vincula la cuenta del cliente antes de publicar una entrega.');
+      const batch=writeBatch(db);
+      batch.update(doc(db, 'clientDocuments', item.id), {
         status: 'delivered',
         visibleToClient: true,
         publishedByUid: currentUser?.uid || '',
         publishedAt: new Date().toISOString(),
       });
+      batch.set(doc(collection(db,'caseActivity')),{caseId:process.id,actorUid:currentUser.uid,actorName:userProfile?.displayName||currentUser.email||'Equipo BinLegal',action:'document_published',summary:`Entrega publicada: ${item.name} · versión ${item.version}`,visibility:'client',createdAt:new Date().toISOString()});
+      await batch.commit();
       setNotice('Documento publicado en la biblioteca del cliente.');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'No se pudo publicar el documento.');
@@ -161,6 +179,8 @@ export const CaseDocumentLibrary: React.FC<CaseDocumentLibraryProps> = ({ proces
       {notice && <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">{notice}</div>}
       <form onSubmit={upload} className="rounded-xl border border-dashed border-neutral-300 bg-neutral-50 p-4 space-y-3">
         <div className="flex items-center gap-2 text-sm font-bold"><Upload className="w-4 h-4" />{staffMode ? 'Cargar documento al expediente' : 'Enviar documento al equipo legal'}</div>
+        <label className="block text-xs font-semibold">Documento o versión<select value={previousId} onChange={e=>setPreviousId(e.target.value)} className="mt-1 w-full rounded-lg border p-2 text-sm"><option value="">Nuevo documento</option>{visibleDocuments.filter(item=>staffMode||(item.kind==='client_upload'&&item.uploadedByUid===currentUser?.uid)).map(item=><option key={item.id} value={item.id}>Nueva versión de {item.name} (v{item.version})</option>)}</select></label>
+        <p className="text-xs text-neutral-500">Cada versión conserva el archivo anterior. PDF, Word, Excel, PowerPoint, JPG, PNG o WebP; menos de 25 MB.</p>
         <input id="case-document-file" type="file" required onChange={e => setFile(e.target.files?.[0] || null)} className="block w-full text-sm file:mr-3 file:rounded-md file:border-0 file:bg-white file:px-3 file:py-2 file:font-semibold file:text-neutral-700" />
         {staffMode && <label className="block text-xs font-semibold">Tipo de documento<select value={kind} onChange={e => setKind(e.target.value as ClientDocument['kind'])} className="mt-1 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm font-normal"><option value="team_working_file">Archivo interno de trabajo</option><option value="draft">Borrador para revisión</option><option value="final_deliverable">Documento final para entregar</option><option value="scanned_copy">Copia escaneada</option><option value="official_receipt">Constancia o recibo oficial</option><option value="other">Otro</option></select></label>}
         <label className="block text-xs font-semibold">Descripción (opcional)<input value={description} onChange={e => setDescription(e.target.value)} placeholder="Ej. RIF actualizado, copia escaneada…" className="mt-1 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm font-normal" /></label>

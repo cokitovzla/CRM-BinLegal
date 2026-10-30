@@ -1,11 +1,23 @@
+import {getStorage,connectStorageEmulator} from 'firebase/storage';
 import { initializeApp } from 'firebase/app';
-import { getAuth } from 'firebase/auth';
-import { getFirestore, doc, getDocFromServer } from 'firebase/firestore';
+import { getAuth, connectAuthEmulator } from 'firebase/auth';
+import { getFirestore, connectFirestoreEmulator, doc, getDocFromServer } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
+import stagingConfig from '../../firebase.staging-config.json';
 
-const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+export const usingFirebaseEmulators = import.meta.env.MODE === 'emulators';
+export const usingFirebaseStaging = import.meta.env.MODE === 'staging';
+if(usingFirebaseEmulators && !['localhost','127.0.0.1','[::1]'].includes(window.location.hostname)) throw new Error('El entorno de pruebas solo puede ejecutarse en localhost.');
+if(usingFirebaseStaging && !['localhost','127.0.0.1','[::1]'].includes(window.location.hostname)) throw new Error('El entorno Firebase de pruebas solo puede ejecutarse en localhost hasta completar los permisos.');
+const config=usingFirebaseEmulators?{projectId:'demo-binlegal-local',apiKey:'demo-local-only',authDomain:'localhost',storageBucket:'demo-binlegal-local.appspot.com',appId:'demo-binlegal-local'}:usingFirebaseStaging?stagingConfig:firebaseConfig;
+const app = initializeApp(config);
+export const db = getFirestore(app, usingFirebaseEmulators||usingFirebaseStaging?'(default)':firebaseConfig.firestoreDatabaseId);
 export const auth = getAuth(app);
+if(usingFirebaseEmulators) {
+ connectAuthEmulator(auth,'http://127.0.0.1:9099',{disableWarnings:false});
+ connectFirestoreEmulator(db,'127.0.0.1',8080);
+ connectStorageEmulator(getStorage(app),'127.0.0.1',9199);
+}
 
 export enum OperationType {
   CREATE = 'create',
@@ -64,4 +76,4 @@ async function testConnection() {
     }
   }
 }
-testConnection();
+if(!usingFirebaseEmulators&&!usingFirebaseStaging) testConnection();

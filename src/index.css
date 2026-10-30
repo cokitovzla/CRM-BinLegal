@@ -68,6 +68,10 @@
     background-color: #0071ce;
     color: #ffffff;
   }
+
+  a, a:hover, a:focus-visible, button:hover {
+    text-decoration: none !important;
+  }
 }
 
 .font-display {

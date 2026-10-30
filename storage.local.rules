@@ -1,0 +1,25 @@
+rules_version = '2';
+service firebase.storage {
+ match /b/{bucket}/o {
+  function signedIn() {return request.auth != null;}
+  function admin() {return signedIn() && firestore.exists(/databases/(default)/documents/admins/$(request.auth.uid));}
+  function caseData(caseId) {return firestore.get(/databases/(default)/documents/processes/$(caseId)).data;}
+  function staff(caseId) {
+   let parent=caseData(caseId);
+   return signedIn() && (admin() || (firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.role in ['lawyer','supervisor','intern','secretary'] && request.auth.uid in parent.assignedLawyerIds));
+  }
+  function published(caseId,uploaderUid,fileName) {
+   return firestore.exists(/databases/(default)/documents/clientDocuments/$(resource.metadata.documentId)) &&
+    firestore.get(/databases/(default)/documents/clientDocuments/$(resource.metadata.documentId)).data.caseId==caseId &&
+    firestore.get(/databases/(default)/documents/clientDocuments/$(resource.metadata.documentId)).data.clientId==request.auth.uid &&
+    firestore.get(/databases/(default)/documents/clientDocuments/$(resource.metadata.documentId)).data.visibleToClient==true &&
+    firestore.get(/databases/(default)/documents/clientDocuments/$(resource.metadata.documentId)).data.status=='delivered' &&
+    firestore.get(/databases/(default)/documents/clientDocuments/$(resource.metadata.documentId)).data.storagePath=='client-documents/'+caseId+'/'+uploaderUid+'/'+fileName;
+  }
+  match /client-documents/{caseId}/{uploaderUid}/{fileName} {
+   allow read: if signedIn() && (staff(caseId) || (caseData(caseId).userId==request.auth.uid && (uploaderUid==request.auth.uid || published(caseId,uploaderUid,fileName))));
+   allow create: if signedIn() && uploaderUid==request.auth.uid && (staff(caseId) || caseData(caseId).userId==request.auth.uid) && request.resource.size>0 && request.resource.size<25*1024*1024 && request.resource.contentType.matches('application/pdf|image/.*|application/msword|application/vnd.openxmlformats-officedocument.*') && request.resource.metadata.documentId is string;
+   allow update, delete: if false;
+  }
+ }
+}

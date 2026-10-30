@@ -20,7 +20,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenAuth,
   onOpenShare
 }) => {
-  const { currentUser, isAdmin, logout } = useAuth();
+  const { currentUser, userProfile, isAdmin, logout } = useAuth();
+  const canUseWorkspace = isAdmin || ['lawyer','supervisor','intern','secretary'].includes(userProfile?.role || '');
   const [mobileMenuOpen, setMobileMenuOpen] = React.useState(false);
 
   // Auto-close dropdown when viewport is resized back to desktop size
@@ -131,7 +132,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                   <span>Mi Portal</span>
                 </button>
 
-                {isAdmin && (
+                {canUseWorkspace && (
                   <button
                     onClick={() => onNavigate(currentView === 'admin' ? 'landing' : 'admin')}
                     className="px-3 py-2 text-xs font-semibold text-neutral-800 bg-neutral-100 hover:bg-neutral-200 rounded-lg border border-neutral-300 flex items-center gap-1.5 cursor-pointer"
@@ -324,7 +325,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                   <FolderKanban className="w-4 h-4" />
                   <span>Mi Portal de Trámites</span>
                 </button>
-                {isAdmin && (
+                {canUseWorkspace && (
                   <button
                     onClick={() => {
                     onNavigate('admin');
@@ -332,7 +333,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                   }}
                   className="w-full text-center py-2.5 px-4 bg-neutral-100 text-neutral-800 text-xs font-semibold rounded-lg border border-neutral-300 cursor-pointer"
                 >
-                  CRM José Rafael Vásquez
+                  Mi espacio de trabajo
                 </button>
                 )}
                 <button

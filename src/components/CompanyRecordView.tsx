@@ -65,7 +65,7 @@ export const CompanyRecordView: React.FC<Props> = ({
 
   // Company Note State
   const [companyNoteText, setCompanyNoteText] = useState('');
-  const [companyNoteAuthor, setCompanyNoteAuthor] = useState('José Rafael Vásquez');
+  const [companyNoteAuthor, setCompanyNoteAuthor] = useState('Elena Marín');
 
   // Filter contacts belonging to this company
   const companyContacts = leads.filter(l => norm(l.company) === norm(company)).sort((a, b) => {
@@ -100,7 +100,7 @@ export const CompanyRecordView: React.FC<Props> = ({
 
   // Lead lawyer for this company account (most common or first assigned)
   const assignedLawyers = relatedProcesses.map(p => p.assignedLawyer).filter(Boolean);
-  const primaryLawyer = assignedLawyers[0] || 'José Rafael Vásquez';
+  const primaryLawyer = assignedLawyers[0] || 'Elena Marín';
 
   // Gather internal notes from all contacts of this company
   const aggregatedNotes: Array<InternalNote & { contactName: string }> = [];

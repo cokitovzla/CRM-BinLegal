@@ -1,62 +1,81 @@
+import { formatCrmDate } from '../lib/dates';
 import React, { useState } from 'react';
-import { 
-  Lead, 
-  LeadStatus, 
-  BusinessStage, 
-  LegalArea, 
-  InternalNote, 
-  LegalProcess, 
+import {
+  Lead,
+  LeadStatus,
+  BusinessStage,
+  LegalArea,
+  InternalNote,
+  LegalProcess,
   ProcessStatus,
   LeadBudget,
-  LeadDocument 
+  LeadDocument
 } from '../types';
-import { 
-  Users, 
-  Search, 
-  Filter, 
-  ArrowRight, 
-  CheckCircle2, 
-  Calendar, 
-  Clock, 
-  MessageSquare, 
-  Plus, 
-  Download, 
-  X, 
-  Phone, 
-  Mail, 
-  Building, 
-  AlertTriangle, 
-  ChevronRight, 
-  Send, 
-  Briefcase, 
-  Layers, 
-  LayoutGrid, 
-  List, 
-  FolderKanban, 
-  Building2, 
-  Star, 
-  Copy, 
-  Check, 
-  Workflow 
+import {
+  Users,
+  Search,
+  Filter,
+  ArrowRight,
+  CheckCircle2,
+  Calendar,
+  Clock,
+  MessageSquare,
+  Plus,
+  Download,
+  X,
+  Phone,
+  Mail,
+  Building,
+  AlertTriangle,
+  ChevronRight,
+  Send,
+  Briefcase,
+  Layers,
+  LayoutGrid,
+  List,
+  FolderKanban,
+  Building2,
+  Star,
+  Copy,
+  Check,
+  Workflow
 } from 'lucide-react';
 import { SectorSelector, COMMON_BUSINESS_SECTORS } from './SectorSelector';
 import { sendPasswordResetEmail } from 'firebase/auth';
-import { auth } from '../lib/firebase';
+import { auth, db } from '../lib/firebase';
+import { addDoc, collection, deleteDoc, doc, onSnapshot, query, where } from 'firebase/firestore';
+import type { UserProfile } from '../types';
 import { WorkflowBoard } from './WorkflowBoard';
 import { ClientRecordView } from './ClientRecordView';
 import { CompanyRecordView } from './CompanyRecordView';
 import { ConvertLeadToProcessModal } from './ConvertLeadToProcessModal';
+import type { LeadFollowUp } from '../services/leadModel';
+import { useAuth } from '../context/AuthContext';
+import { commercialStatus, type CommercialActivity } from '../domain/commercial';
+import { MeetingAgenda, type MeetingAgendaFilter } from './MeetingAgenda';
+import { TaskInbox, type TaskInboxFilter } from './TaskInbox';
+import { ViewModeSwitch, useViewMode } from './ViewModeSwitch';
+import { StaffDirectory } from './StaffDirectory';
 import { RequestDetailView } from './RequestDetailView';
+import { DemoLogo } from './DemoLanding';
 
 interface AdminCRMProps {
+  onSaveCommercial: (lead: Lead, activity: CommercialActivity) => Promise<void>;
+  onReviewOrClose: (process:LegalProcess,closing:boolean,summary:string,documentId:string)=>Promise<void>;
+  onSaveCaseControls: (process: LegalProcess) => Promise<void>;
+  onStartCase: (process: LegalProcess) => Promise<void>;
   leads: Lead[];
+  onAcceptServices: (lead: Lead, ids: string[], evidence: string) => Promise<void>;
+  onSaveBudget: (lead: Lead, budget: LeadBudget) => Promise<void>;
+  onSaveFollowUp: (lead: Lead, followUp: LeadFollowUp) => Promise<void>;
   processes?: LegalProcess[];
   onCreateProcess?: (process: LegalProcess) => void;
   onUpdateLeadStatus: (leadId: string, newStatus: LeadStatus) => void;
   onAddInternalNote: (leadId: string, noteText: string, author: string) => void;
-  onAddManualLead: (lead: Lead) => void;
+  onAddManualLead: (lead: Lead) => Promise<void>;
   onUpdateProcessStatus?: (processId: string, status: ProcessStatus, progress: number, milestone?: string) => void;
   onUpdateProcessLawyer?: (processId: string, lawyer: string) => void;
+  onAssignProcess?: (processId: string, uid: string, name: string) => Promise<void>;
   onBackToLanding: () => void;
   onOpenDiagnostic?: () => void;
   onUpdateLead?: (lead: Lead) => void;
@@ -70,7 +89,14 @@ const STAGES_CONFIG: Array<{ id: LeadStatus; label: string; desc: string }> = [
 ];
 
 export const AdminCRM: React.FC<AdminCRMProps> = ({
-  leads,
+  leads: sourceLeads,
+  onSaveCommercial,
+  onReviewOrClose,
+  onSaveCaseControls,
+  onStartCase,
+  onAcceptServices,
+  onSaveBudget,
+  onSaveFollowUp,
   processes = [],
   onCreateProcess,
   onUpdateLeadStatus,
@@ -78,23 +104,39 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
   onAddManualLead,
   onUpdateProcessStatus,
   onUpdateProcessLawyer,
+  onAssignProcess,
   onBackToLanding,
   onOpenDiagnostic,
   onUpdateLead
 }) => {
-  const [adminTab, setAdminTab] = useState<'requests' | 'contacts' | 'processes' | 'lawyers'>('requests');
-  const [expandedMenu, setExpandedMenu] = useState<'Solicitudes' | 'Directorio' | 'Expedientes' | ''>('Solicitudes');
-  const [lawyers, setLawyers] = useState<string[]>(() => { try { const saved = localStorage.getItem('binlegal_crm_lawyers_v1'); if (saved) return JSON.parse(saved); } catch {} return ['José Rafael Vasquez', 'Supervisor Legal', 'María Fernández', 'Ricardo Salas', 'Pasante Legal']; });
+  const leads = React.useMemo(() => sourceLeads.map(lead => ({...lead,status:commercialStatus(lead)})), [sourceLeads]);
+  const { isAdmin, userProfile } = useAuth();
+  const preview = window.location.pathname.replace(/\/$/, '') === '/crm-preview';
+  const [adminTab, setAdminTab] = useState<'requests' | 'contacts' | 'processes' | 'lawyers' | 'tasks' | 'agenda'>('requests');
+  const [expandedMenu, setExpandedMenu] = useState<'Solicitudes' | 'Directorio' | 'Expedientes' | 'Mi espacio' | 'Agenda' | ''>('Solicitudes');
+  const [taskFilter, setTaskFilter] = useState<TaskInboxFilter>('mine');
+  const [agendaFilter, setAgendaFilter] = useState<MeetingAgendaFilter>('scheduled');
+  const [lawyers, setLawyers] = useState<string[]>(() => { try { const saved = localStorage.getItem('binlegal_crm_lawyers_v1'); if (saved) return JSON.parse(saved); } catch {} return ['Elena Marín', 'Supervisor Legal', 'María Fernández', 'Ricardo Salas', 'Pasante Legal']; });
   const [newLawyerName, setNewLawyerName] = useState('');
   const [selectedLawyer, setSelectedLawyer] = useState<string | null>(null);
   const [lawyerProfiles, setLawyerProfiles] = useState<Record<string, { specialty: string; email: string; phone: string; notes: string }>>(() => { try { return JSON.parse(localStorage.getItem('binlegal_crm_lawyer_profiles_v1') || '{}'); } catch { return {}; } });
   const [lawyerProfileDraft, setLawyerProfileDraft] = useState({ specialty: '', email: '', phone: '', notes: '' });
-  const [activeView, setActiveView] = useState<'pipeline' | 'table'>('table');
+  const [requestViewMode, setRequestViewMode] = useViewMode('requests');
+  const [processViewMode, setProcessViewMode] = useViewMode('processes');
+  const [directoryViewMode, setDirectoryViewMode] = useViewMode('directory');
+  const [teamViewMode, setTeamViewMode] = useViewMode('team');
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [quickFilter, setQuickFilter] = useState<'all' | 'followup' | 'meetings' | 'new'>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedStageFilter, setSelectedStageFilter] = useState<string>('all');
   const [selectedSectorFilter, setSelectedSectorFilter] = useState<string>('all');
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
+  React.useEffect(() => {
+    setSelectedLead(previous => previous ? leads.find(item => item.id === previous.id) || null : null);
+  }, [leads]);
+  const [manualSaving, setManualSaving] = useState(false);
+  const [manualError, setManualError] = useState('');
+  const manualDraft = React.useRef<Lead | null>(null);
   const [selectedLeadOrigin, setSelectedLeadOrigin] = useState<'requests' | 'contacts'>('requests');
   const [selectedCompany, setSelectedCompany] = useState<string | null>(null);
   const [contactDirectoryView, setContactDirectoryView] = useState<'people' | 'companies'>('companies');
@@ -103,14 +145,36 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
   const [copiedEmail, setCopiedEmail] = useState<string | null>(null);
   const [selectedProcessToEdit, setSelectedProcessToEdit] = useState<LegalProcess | null>(null);
   const [selectedWorkflowProcess, setSelectedWorkflowProcess] = useState<LegalProcess | null>(null);
+  React.useEffect(() => {
+    setSelectedWorkflowProcess(previous => previous ? processes.find(item => item.id === previous.id) || null : null);
+  }, [processes]);
   const [accountActionMessage, setAccountActionMessage] = useState('');
   const [resetEmailLoading, setResetEmailLoading] = useState(false);
   const [profileProcessId, setProfileProcessId] = useState('');
-  const [processQuickFilter, setProcessQuickFilter] = useState<'active' | 'recaudos' | 'redaccion' | 'tramite_publico' | 'revision'>('active');
+  const [processQuickFilter, setProcessQuickFilter] = useState<'active' | 'unassigned' | 'recaudos' | 'redaccion' | 'revision' | 'tramite_publico' | 'ready'>('active');
+  const canAssignCases = preview || isAdmin || userProfile?.role === 'supervisor';
+  const [staffAccounts, setStaffAccounts] = useState<UserProfile[]>([]);
+  const [assignmentChoices, setAssignmentChoices] = useState<Record<string, string>>({});
+  const [contactLinks, setContactLinks] = useState<Array<{ id: string; staffUid: string; leadId: string; name: string; email: string; company: string }>>([]);
+  const [linkLeadId, setLinkLeadId] = useState('');
+  const [linkStaffUid, setLinkStaffUid] = useState('');
+  React.useEffect(() => {
+    if (preview || (!isAdmin && !userProfile?.userId)) return;
+    const source = isAdmin ? collection(db, 'contactLinks') : query(collection(db, 'contactLinks'), where('staffUid', '==', userProfile!.userId));
+    return onSnapshot(source, snapshot => setContactLinks(snapshot.docs.map(item => ({ ...item.data(), id: item.id } as { id: string; staffUid: string; leadId: string; name: string; email: string; company: string }))), () => setContactLinks([]));
+  }, [preview, isAdmin, userProfile?.userId]);
+  React.useEffect(() => {
+    if (preview || !canAssignCases) return;
+    const source = isAdmin ? collection(db, 'users') : query(collection(db, 'users'), where('role', 'in', ['lawyer', 'supervisor', 'intern', 'secretary']));
+    return onSnapshot(source, snapshot => setStaffAccounts(snapshot.docs.map(item => ({ ...item.data(), userId: item.id } as UserProfile)).filter(item => ['lawyer', 'supervisor', 'intern', 'secretary'].includes(item.role))), () => setStaffAccounts([]));
+  }, [preview, canAssignCases, isAdmin]);
+  const assignableAccounts = preview ? lawyers.map((name, index) => ({ userId: `preview-staff-${index}`, displayName: name })) : staffAccounts;
+  const assignmentControl = (proc: LegalProcess) => canAssignCases && pendingAssignment(proc) && onAssignProcess ? <div className="mt-3 flex flex-wrap items-center gap-2" onClick={event => event.stopPropagation()}><select aria-label={`Responsable de ${proc.title}`} value={assignmentChoices[proc.id] || ''} onChange={event => setAssignmentChoices(previous => ({ ...previous, [proc.id]: event.target.value }))} className="min-w-0 flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs"><option value="">Elegir cuenta del equipo</option>{assignableAccounts.map(account => <option key={account.userId} value={account.userId}>{account.displayName}</option>)}</select><button type="button" disabled={!assignmentChoices[proc.id]} onClick={() => { const account = assignableAccounts.find(item => item.userId === assignmentChoices[proc.id]); if (account) void onAssignProcess(proc.id, account.userId, account.displayName); }} className="rounded-lg bg-blue-700 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50">Asignar</button></div> : null;
+  const pendingAssignment = (process: LegalProcess) => process.assignmentStatus === 'pending' || (!process.assignedLawyerId && (!process.assignedLawyer || process.assignedLawyer === 'Sin asignar'));
 
   // New Note state
   const [noteText, setNoteText] = useState('');
-  const [noteAuthor, setNoteAuthor] = useState('José Rafael Vásquez');
+  const [noteAuthor, setNoteAuthor] = useState('Elena Marín');
 
   // Manual Lead Modal state
   const [showAddLeadModal, setShowAddLeadModal] = useState(false);
@@ -130,9 +194,9 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
   const [companyToConvert, setCompanyToConvert] = useState<string>('');
 
   const handleOpenConvertModal = (targetLead?: Lead | null, companyName?: string) => {
-    setLeadToConvert(targetLead || null);
-    setCompanyToConvert(companyName || targetLead?.company || '');
-    setShowConvertModal(true);
+    const target = targetLead || leads.find(item => item.company === companyName);
+    if (target) { setSelectedLead(target); setSelectedLeadOrigin('requests'); setSelectedCompany(null); }
+    else { setAdminTab('requests'); }
   };
 
   const handleLeadLawyerChange = (leadId: string, lawyer: string) => {
@@ -140,9 +204,7 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
     if (target) {
       const updated = { ...target, assignedLawyer: lawyer };
       onUpdateLead?.(updated);
-      if (selectedLead && selectedLead.id === leadId) {
-        setSelectedLead(updated);
-      }
+
     }
   };
 
@@ -151,9 +213,7 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
     if (target) {
       const updated = { ...target, budget };
       onUpdateLead?.(updated);
-      if (selectedLead && selectedLead.id === leadId) {
-        setSelectedLead(updated);
-      }
+
     }
   };
 
@@ -163,9 +223,7 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
       const existing = target.documents || [];
       const updated = { ...target, documents: [doc, ...existing] };
       onUpdateLead?.(updated);
-      if (selectedLead && selectedLead.id === leadId) {
-        setSelectedLead(updated);
-      }
+
     }
   };
 
@@ -175,40 +233,13 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
       const updatedDocs = target.documents.map(d => d.id === docId ? { ...d, status } : d);
       const updated = { ...target, documents: updatedDocs };
       onUpdateLead?.(updated);
-      if (selectedLead && selectedLead.id === leadId) {
-        setSelectedLead(updated);
-      }
+
     }
   };
 
-  const handleConfirmConvert = (
-    newProcess: LegalProcess, 
-    options: { markAsActive: boolean; addNote: boolean; leadId?: string }
-  ) => {
-    if (onCreateProcess) {
-      onCreateProcess(newProcess);
-    }
-    if (options.leadId) {
-      if (options.markAsActive) {
-        onUpdateLeadStatus(options.leadId, 'cliente_activo');
-      }
-      if (options.addNote) {
-        onAddInternalNote(
-          options.leadId,
-          `Expediente formalizado: "${newProcess.title}" (Categoría: ${newProcess.category}) asignado a ${newProcess.assignedLawyer}. Plazo meta: ${newProcess.targetDate}. Hito inicial: ${newProcess.nextMilestone}`,
-          'José Rafael Vásquez'
-        );
-      }
-      const target = leads.find(l => l.id === options.leadId);
-      if (target) {
-        const updated = { ...target, status: 'cliente_activo' as LeadStatus, linkedProcessId: newProcess.id };
-        onUpdateLead?.(updated);
-      }
-    }
-    // Seamlessly transition right into the workflow board for zero friction
-    setSelectedLead(null);
-    setSelectedCompany(null);
-    setSelectedWorkflowProcess(newProcess);
+  const handleConfirmConvert = (_process: LegalProcess, options: { leadId?: string }) => {
+    const target = leads.find(item => item.id === options.leadId);
+    if (target) handleOpenConvertModal(target);
   };
 
   React.useEffect(() => { localStorage.setItem('binlegal_crm_lawyers_v1', JSON.stringify(lawyers)); }, [lawyers]);
@@ -223,15 +254,20 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
                           l.industry.toLowerCase().includes(searchQuery.toLowerCase());
     const matchesStage = selectedStageFilter === 'all' || l.status === selectedStageFilter;
     const matchesQuickFilter = quickFilter === 'all' || (quickFilter === 'new' && l.status === 'nuevo_lead') || (quickFilter === 'followup' && l.status !== 'nuevo_lead' && l.status !== 'cliente_activo') || (quickFilter === 'meetings' && l.status === 'sesion_programada');
-    const matchesSector = selectedSectorFilter === 'all' || 
+    const matchesSector = selectedSectorFilter === 'all' ||
                           l.industry.toLowerCase().includes(selectedSectorFilter.toLowerCase());
     return matchesSearch && matchesStage && matchesSector && matchesQuickFilter;
   });
+  const visibleRequests = [...filteredLeads]
+    .filter(lead => lead.status !== 'cliente_activo')
+    .sort((a, b) => {
+      const order: Record<string, number> = { nuevo_lead: 0, diagnostico_enviado: 1, sesion_programada: 2, propuesta_presentada: 3 };
+      return (order[a.status] ?? 99) - (order[b.status] ?? 99) || a.fullName.localeCompare(b.fullName, 'es', { sensitivity: 'base' });
+    });
 
   const selectQuickFilter = (filter: 'all' | 'followup' | 'meetings' | 'new') => {
     setQuickFilter(filter);
     setSelectedStageFilter('all');
-    setActiveView('table');
   };
 
   // KPI Calculations
@@ -244,7 +280,7 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
     if (!noteText.trim()) return;
     onAddInternalNote(leadId, noteText, noteAuthor);
     setNoteText('');
-    
+
     // Update local selectedLead state
     if (selectedLead && selectedLead.id === leadId) {
       const updatedNotes: InternalNote[] = [
@@ -276,14 +312,12 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
 
   const handleStatusChange = (leadId: string, newStatus: LeadStatus) => {
     onUpdateLeadStatus(leadId, newStatus);
-    if (selectedLead && selectedLead.id === leadId) {
-      setSelectedLead({ ...selectedLead, status: newStatus });
-    }
+
   };
 
-  const handleSaveManualLead = (e: React.FormEvent) => {
+  const handleSaveManualLead = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newFullName || !newEmail || !newCompany) return;
+    if (manualSaving || !newFullName.trim() || !newEmail.trim()) return;
 
     const formattedIndustry = newSelectedSectors.map(s => {
       if (s === 'Otro') {
@@ -297,24 +331,17 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
       fullName: newFullName,
       email: newEmail,
       phone: newPhone || undefined,
-      company: newCompany,
+      company: newCompany.trim() || 'Consulta particular',
+      source: 'manual',
       industry: formattedIndustry,
       stage: newStage,
       areasOfInterest: newAreas,
       notes: newSituation || undefined,
       status: 'nuevo_lead',
-      createdAt: new Date().toISOString().replace('T', ' ').slice(0, 16),
-      calculatedRiskScore: 60,
+      createdAt: new Date().toISOString(),
+      calculatedRiskScore: 0,
       riskSummary: `Registrado manualmente por ${noteAuthor} para prospección directa.`,
-      riskItems: [
-        {
-          area: newAreas[0] || 'Corporativo',
-          level: 'Medio',
-          title: 'Evaluación inicial pendiente',
-          description: 'Contacto directo de ventas para diagnóstico telefónico o presencial.',
-          actionRequired: 'Agendar llamada de calificación de 15 minutos.'
-        }
-      ],
+      riskItems: [],
       internalNotes: [
         {
           id: `note-${Date.now()}`,
@@ -325,14 +352,18 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
       ]
     };
 
-    onAddManualLead(lead);
-    setShowAddLeadModal(false);
-    setNewFullName('');
-    setNewEmail('');
-    setNewPhone('');
-    setNewCompany('');
-    setNewSelectedSectors(['Tecnología & Software']);
-    setNewOtherSectorText('');
+    setManualSaving(true); setManualError('');
+    try {
+      const same = manualDraft.current && (['fullName', 'email', 'company', 'phone', 'notes', 'stage', 'industry'] as const).every(key => manualDraft.current?.[key] === lead[key]) && JSON.stringify(manualDraft.current.areasOfInterest) === JSON.stringify(lead.areasOfInterest);
+      if (!same) manualDraft.current = lead;
+      await onAddManualLead(manualDraft.current!);
+      manualDraft.current = null;
+      setShowAddLeadModal(false);
+      setNewFullName(''); setNewEmail(''); setNewPhone(''); setNewCompany('');
+      setNewSelectedSectors(['Tecnología & Software']); setNewOtherSectorText(''); setNewSituation('');
+    } catch (error) {
+      setManualError(error instanceof Error ? error.message : 'No se pudo guardar. Conservamos los datos para reintentar.');
+    } finally { setManualSaving(false); }
   };
 
   const exportCSV = () => {
@@ -360,32 +391,24 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
     document.body.removeChild(link);
   };
 
+  if (!preview && !isAdmin) return selectedWorkflowProcess
+    ? <WorkflowBoard process={selectedWorkflowProcess} lawyers={[]} onReviewOrClose={onReviewOrClose} onSaveCaseControls={onSaveCaseControls} onStartCase={onStartCase} onBack={() => setSelectedWorkflowProcess(null)} onBackLabel="Volver a mi trabajo" />
+    : <div className="mx-auto w-full max-w-6xl p-4"><TaskInbox processes={processes} onOpen={setSelectedWorkflowProcess} /></div>;
+
   return (
     <div className="crm-workspace min-h-screen bg-[#f4f5f5] flex flex-col font-sans text-[#3e4543]">
-      
+
       {/* Top Bar for Admin */}
       <header className="bg-[#3e4543] text-white border-b border-[#323836] sticky top-0 z-40">
         <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8">
           <div className="flex flex-wrap items-center justify-between min-h-[64px] py-3 gap-3">
-            
+
             <div className="flex items-center gap-2.5">
-              <img 
-                src="/assets/images/LogoApaisado_BinLegal.png" 
-                alt="BinLegal Logo" 
-                className="h-8 sm:h-9 w-auto object-contain bg-white rounded p-1" 
-              />
-              <div>
-                <h1 className="text-sm sm:text-base font-semibold tracking-tight text-white flex items-center gap-2">
-                  <span>BinLegal CRM</span>
-                  <span className="text-[#cfd1d0] font-normal">·</span>
-                  <span className="text-xs sm:text-sm text-[#e7e8e8] font-normal hidden sm:inline">
-                    José Rafael Vásquez
-                  </span>
-                </h1>
-              </div>
+              <DemoLogo dark />
+              <span className="hidden rounded-full border border-cyan-300/30 bg-cyan-300/10 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-cyan-200 sm:inline">Omega CRM</span>
             </div>
 
-            <div className="flex items-center gap-1.5 sm:gap-2">
+            <div className="flex flex-wrap items-center justify-end gap-1.5 sm:gap-2">
               {onOpenDiagnostic && (
                 <button
                   type="button"
@@ -399,10 +422,11 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
                 </button>
               )}
 
-              {(adminTab === 'requests' || adminTab === 'contacts') && (
+              {(isAdmin || preview) && (adminTab === 'requests' || adminTab === 'contacts') && (
                 <>
                   <button
                     onClick={() => setShowAddLeadModal(true)}
+                    aria-label="Nuevo contacto"
                     className="px-2.5 py-1.5 bg-[#323836] hover:bg-[#4f5553] text-white rounded-lg text-xs font-medium transition-colors flex items-center gap-1 border border-neutral-700 cursor-pointer"
                   >
                     <Plus className="w-3.5 h-3.5" />
@@ -437,8 +461,13 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
       {/* CRM workspace navigation with one expanded section at a time */}
       <div className="flex-1 w-full max-w-screen-2xl mx-auto min-w-0 lg:flex">
         <aside className="w-full min-w-0 px-3 sm:px-4 lg:w-60 lg:shrink-0 lg:px-4 py-3 lg:py-6">
+          <button type="button" aria-expanded={mobileNavOpen} aria-controls="crm-workspace-menu" onClick={() => setMobileNavOpen(open => !open)} className="mb-2 flex w-full items-center justify-between rounded-xl border border-[#cfd1d0] bg-white px-4 py-3 text-sm font-semibold text-[#3e4543] lg:hidden">
+            <span>Menú del CRM</span><ChevronRight className={`h-4 w-4 transition-transform ${mobileNavOpen ? 'rotate-90' : ''}`} />
+          </button>
+          <div id="crm-workspace-menu" onClickCapture={event => { if ((event.target as HTMLElement).closest('button')) setMobileNavOpen(false); }} className={`${mobileNavOpen ? 'block' : 'hidden'} lg:block`}>
           <div className="rounded-xl border border-[#cfd1d0] bg-white p-2 lg:sticky lg:top-24">
-            <p className="px-3 pt-2 pb-3 text-xs font-semibold uppercase tracking-wide text-[#626967]">Tu espacio de trabajo</p>
+
+<p className="px-3 pt-2 pb-3 text-xs font-semibold uppercase tracking-wide text-[#626967]">Tu espacio de trabajo</p>
 
             <button type="button" onClick={() => {
               setSelectedLead(null); setSelectedCompany(null); setSelectedWorkflowProcess(null);
@@ -451,10 +480,10 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
             </button>
             {expandedMenu === 'Solicitudes' && <div className="ml-5 mt-1 space-y-1 border-l border-[#dce2e6] pl-3">
               {[
-                { label: 'Nuevas sin atender', value: 'new' as const },
+                { label: 'Nuevas / sin atender', value: 'new' as const },
                 { label: 'En seguimiento', value: 'followup' as const },
                 { label: 'Reuniones programadas', value: 'meetings' as const },
-                { label: 'Estados de solicitudes', value: 'all' as const }
+                { label: 'Total de solicitudes', value: 'all' as const }
               ].map(item => <button key={item.value} type="button" onClick={() => {
                 setSelectedLead(null); setSelectedCompany(null); setSelectedWorkflowProcess(null);
                 setAdminTab('requests'); setQuickFilter(item.value); setSelectedStageFilter('all');
@@ -463,13 +492,40 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
 
             <button type="button" onClick={() => {
               setSelectedLead(null); setSelectedCompany(null); setSelectedWorkflowProcess(null);
+              setAdminTab('processes'); setExpandedMenu(current => current === 'Expedientes' ? '' : 'Expedientes');
+            }} aria-expanded={expandedMenu === 'Expedientes'} aria-current={adminTab === 'processes' ? 'page' : undefined}
+              className={`mt-1 w-full flex items-center gap-3 rounded-lg px-3 py-3 text-sm font-semibold text-left transition-colors ${adminTab === 'processes' ? 'bg-[#e0effb] text-[#004f91] border border-[#b9ddf6]' : 'text-[#3e4543] hover:bg-[#f4f5f5]'}`}>
+              <FolderKanban className="w-5 h-5 shrink-0" /><span className="flex-1">Trámites</span><span className="text-xs tabular-nums">{processes.filter(process => process.status !== 'completado').length}</span>
+              <ChevronRight className={`h-4 w-4 transition-transform ${expandedMenu === 'Expedientes' ? 'rotate-90' : ''}`} />
+            </button>
+            {expandedMenu === 'Expedientes' && <div className="ml-5 mt-1 space-y-1 border-l border-[#dce2e6] pl-3">
+              {([
+                { label: 'Todos los trámites activos', value: 'active' as const },
+                ...(canAssignCases ? [{ label: 'Nuevos - pendientes por asignar', value: 'unassigned' as const }] : []),
+                { label: 'Pendientes por recaudos', value: 'recaudos' as const },
+                { label: 'En redacción', value: 'redaccion' as const },
+                { label: 'En revisión', value: 'revision' as const },
+                { label: 'En organismo público', value: 'tramite_publico' as const },
+                { label: 'Listos para entregar al cliente', value: 'ready' as const }
+              ]).map(item => <button key={item.value} type="button" onClick={() => {
+                setSelectedLead(null); setSelectedCompany(null); setSelectedWorkflowProcess(null);
+                setAdminTab('processes'); setProcessQuickFilter(item.value);
+              }} className={`w-full rounded-md px-3 py-2 text-left text-xs transition-colors ${processQuickFilter === item.value && adminTab === 'processes' ? 'bg-[#e0effb] font-semibold text-[#004f91]' : 'text-[#505856] hover:bg-[#f4f5f5]'}`}>{item.label}</button>)}
+            </div>}
+
+            <button type="button" onClick={() => { setAdminTab('tasks'); setSelectedLead(null); setSelectedCompany(null); setSelectedWorkflowProcess(null); setExpandedMenu(current => current === 'Mi espacio' ? '' : 'Mi espacio'); }} aria-expanded={expandedMenu === 'Mi espacio'} aria-current={adminTab === 'tasks' ? 'page' : undefined} className={`mt-1 w-full flex items-center gap-3 rounded-lg px-3 py-3 text-left text-sm font-semibold transition-all ${adminTab === 'tasks' ? 'border border-[#b9ddf6] bg-[#e0effb] text-[#004f91]' : 'text-[#3e4543] hover:bg-[#f4f5f5] hover:shadow-sm'}`}><CheckCircle2 className="h-5 w-5 shrink-0"/><span className="flex-1">Mi espacio</span><ChevronRight className={`h-4 w-4 transition-transform ${expandedMenu === 'Mi espacio' ? 'rotate-90' : ''}`}/></button>
+            {expandedMenu === 'Mi espacio' && <div className="ml-5 mt-1 space-y-1 border-l border-[#dce2e6] pl-3">{([['mine','Mis tareas'],['review','Por revisar'],['overdue','Vencidas'],['all','Todas las tareas']] as const).map(([value,label])=><button key={value} type="button" onClick={()=>{setAdminTab('tasks');setTaskFilter(value);setSelectedLead(null);setSelectedCompany(null);setSelectedWorkflowProcess(null);}} className={`w-full rounded-md px-3 py-2 text-left text-xs transition-all hover:shadow-sm ${taskFilter===value&&adminTab==='tasks'?'bg-[#e0effb] font-semibold text-[#004f91]':'text-[#505856] hover:bg-[#f4f5f5]'}`}>{label}</button>)}</div>}
+            <button type="button" onClick={() => {setAdminTab('agenda');setSelectedLead(null);setSelectedCompany(null);setSelectedWorkflowProcess(null);setExpandedMenu(current => current === 'Agenda' ? '' : 'Agenda');}} aria-expanded={expandedMenu === 'Agenda'} aria-current={adminTab === 'agenda' ? 'page' : undefined} className={`mt-1 w-full flex items-center gap-3 rounded-lg px-3 py-3 text-left text-sm font-semibold transition-all ${adminTab === 'agenda' ? 'border border-[#b9ddf6] bg-[#e0effb] text-[#004f91]' : 'text-[#3e4543] hover:bg-[#f4f5f5] hover:shadow-sm'}`}><Calendar className="h-5 w-5 shrink-0"/><span className="flex-1">Mi Agenda</span><ChevronRight className={`h-4 w-4 transition-transform ${expandedMenu === 'Agenda' ? 'rotate-90' : ''}`}/></button>
+            {expandedMenu === 'Agenda' && <div className="ml-5 mt-1 space-y-1 border-l border-[#dce2e6] pl-3">{([['scheduled','Agendadas'],['completed','Realizadas'],['cancelled','Canceladas'],['all','Todas las reuniones']] as const).map(([value,label])=><button key={value} type="button" onClick={()=>{setAdminTab('agenda');setAgendaFilter(value);setSelectedLead(null);setSelectedCompany(null);setSelectedWorkflowProcess(null);}} className={`w-full rounded-md px-3 py-2 text-left text-xs transition-all hover:shadow-sm ${agendaFilter===value&&adminTab==='agenda'?'bg-[#e0effb] font-semibold text-[#004f91]':'text-[#505856] hover:bg-[#f4f5f5]'}`}>{label}</button>)}</div>}
+            <button type="button" onClick={() => {
+              setSelectedLead(null); setSelectedCompany(null); setSelectedWorkflowProcess(null);
               setAdminTab('contacts'); setExpandedMenu(current => current === 'Directorio' ? '' : 'Directorio');
-            }} aria-expanded={expandedMenu === 'Directorio'} aria-current={adminTab === 'contacts' ? 'page' : undefined}
-              className={`mt-1 w-full flex items-center gap-3 rounded-lg px-3 py-3 text-sm font-semibold text-left transition-colors ${adminTab === 'contacts' ? 'bg-[#e0effb] text-[#004f91] border border-[#b9ddf6]' : 'text-[#3e4543] hover:bg-[#f4f5f5]'}`}>
-              <Users className="w-5 h-5 shrink-0" /><span className="flex-1">Directorio</span><span className="text-xs tabular-nums">{leads.length}</span>
+            }} aria-expanded={expandedMenu === 'Directorio'} aria-current={adminTab === 'contacts' || adminTab === 'lawyers' ? 'page' : undefined}
+              className={`mt-1 w-full flex items-center gap-3 rounded-lg px-3 py-3 text-sm font-semibold text-left transition-colors ${adminTab === 'contacts' || adminTab === 'lawyers' ? 'bg-[#e0effb] text-[#004f91] border border-[#b9ddf6]' : 'text-[#3e4543] hover:bg-[#f4f5f5]'}`}>
+              <Users className="w-5 h-5 shrink-0" /><span className="flex-1">Directorio</span><span className="text-xs tabular-nums">{isAdmin || preview ? leads.length : new Set([...processes.filter(item => item.assignedLawyerId === userProfile?.userId || item.assignedLawyerIds?.includes(userProfile?.userId || '')).map(item => item.clientEmail || item.clientName), ...contactLinks.map(item => item.email || item.name)]).size}</span>
               <ChevronRight className={`h-4 w-4 transition-transform ${expandedMenu === 'Directorio' ? 'rotate-90' : ''}`} />
             </button>
-            {expandedMenu === 'Directorio' && <div className="ml-5 mt-1 space-y-1 border-l border-[#dce2e6] pl-3">
+            {expandedMenu === 'Directorio' && (isAdmin || preview) && <div className="ml-5 mt-1 space-y-1 border-l border-[#dce2e6] pl-3">
               {[
                 { label: 'Empresas', value: 'companies' as const },
                 { label: 'Personas', value: 'people' as const }
@@ -477,84 +533,63 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
                 setSelectedLead(null); setSelectedCompany(null); setSelectedWorkflowProcess(null);
                 setAdminTab('contacts'); setContactDirectoryView(item.value);
               }} className={`w-full rounded-md px-3 py-2 text-left text-xs transition-colors ${contactDirectoryView === item.value && adminTab === 'contacts' ? 'bg-[#e0effb] font-semibold text-[#004f91]' : 'text-[#505856] hover:bg-[#f4f5f5]'}`}>{item.label}</button>)}
+              <button type="button" onClick={() => { setSelectedLead(null); setSelectedCompany(null); setSelectedWorkflowProcess(null); setAdminTab('lawyers'); }} className={`w-full rounded-md px-3 py-2 text-left text-xs transition-colors ${adminTab === 'lawyers' ? 'bg-[#e0effb] font-semibold text-[#004f91]' : 'text-[#505856] hover:bg-[#f4f5f5]'}`}>Equipo legal</button>
             </div>}
 
-            <button type="button" onClick={() => {
-              setSelectedLead(null); setSelectedCompany(null); setSelectedWorkflowProcess(null);
-              setAdminTab('processes'); setExpandedMenu(current => current === 'Expedientes' ? '' : 'Expedientes');
-            }} aria-expanded={expandedMenu === 'Expedientes'} aria-current={adminTab === 'processes' ? 'page' : undefined}
-              className={`mt-1 w-full flex items-center gap-3 rounded-lg px-3 py-3 text-sm font-semibold text-left transition-colors ${adminTab === 'processes' ? 'bg-[#e0effb] text-[#004f91] border border-[#b9ddf6]' : 'text-[#3e4543] hover:bg-[#f4f5f5]'}`}>
-              <FolderKanban className="w-5 h-5 shrink-0" /><span className="flex-1">Expedientes</span><span className="text-xs tabular-nums">{processes.length}</span>
-              <ChevronRight className={`h-4 w-4 transition-transform ${expandedMenu === 'Expedientes' ? 'rotate-90' : ''}`} />
-            </button>
-            {expandedMenu === 'Expedientes' && <div className="ml-5 mt-1 space-y-1 border-l border-[#dce2e6] pl-3">
-              {[
-                { label: 'En trámite', value: 'active' as const },
-                { label: 'En redacción', value: 'redaccion' as const },
-                { label: 'Organismo público', value: 'tramite_publico' as const },
-                { label: 'En revisión', value: 'revision' as const },
-                { label: 'Pendientes por recaudos', value: 'recaudos' as const }
-              ].map(item => <button key={item.value} type="button" onClick={() => {
-                setSelectedLead(null); setSelectedCompany(null); setSelectedWorkflowProcess(null);
-                setAdminTab('processes'); setProcessQuickFilter(item.value);
-              }} className={`w-full rounded-md px-3 py-2 text-left text-xs transition-colors ${processQuickFilter === item.value && adminTab === 'processes' ? 'bg-[#e0effb] font-semibold text-[#004f91]' : 'text-[#505856] hover:bg-[#f4f5f5]'}`}>{item.label}</button>)}
-            </div>}
-
-            <button type="button" onClick={() => {
-              setSelectedLead(null); setSelectedCompany(null); setSelectedWorkflowProcess(null);
-              setAdminTab('lawyers'); setExpandedMenu('');
-            }} aria-current={adminTab === 'lawyers' ? 'page' : undefined}
-              className={`mt-1 w-full flex items-center gap-3 rounded-lg px-3 py-3 text-sm font-semibold text-left transition-colors ${adminTab === 'lawyers' ? 'bg-[#e0effb] text-[#004f91] border border-[#b9ddf6]' : 'text-[#3e4543] hover:bg-[#f4f5f5]'}`}>
-              <Briefcase className="w-5 h-5 shrink-0" /><span className="flex-1">Equipo legal</span><span className="text-xs tabular-nums">{lawyers.length}</span>
-            </button>
             <div className="mt-3 border-t border-[#e7e8e8] px-3 pt-3 pb-2 text-xs leading-relaxed text-[#626967]">
-              Separa las solicitudes comerciales, el directorio de contactos y los expedientes legales.
+              Solicitudes: contacto y propuesta. Trámites: servicios aceptados en ejecución. Mi espacio: tareas asignadas.
             </div>
+          </div>
           </div>
         </aside>
       <main className="min-w-0 flex-1 w-full overflow-x-hidden px-3 sm:px-5 lg:px-6 py-4 sm:py-6 space-y-5">
         {!selectedCompany && !selectedWorkflowProcess && !selectedLead && (
           <div className="w-full min-w-0 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm shadow-slate-900/[0.03] sm:p-5">
             <p className="text-xs font-semibold uppercase tracking-wide text-[#0071ce]">
-              {adminTab === 'requests' ? 'Gestión comercial' : adminTab === 'contacts' ? 'Base de relaciones' : adminTab === 'processes' ? 'Operación legal' : 'Personas y permisos'}
+              {adminTab === 'agenda' ? 'Atención comercial' : adminTab === 'tasks' ? 'Operación diaria' : adminTab === 'requests' ? 'Gestión comercial' : adminTab === 'contacts' ? 'Base de relaciones' : adminTab === 'processes' ? 'Operación legal' : 'Personas y permisos'}
             </p>
             <h2 className="mt-1 text-2xl font-bold text-[#0b192c]">
-              {adminTab === 'requests' ? 'Solicitudes' : adminTab === 'contacts' ? 'Directorio' : adminTab === 'processes' ? 'Expedientes' : 'Equipo legal'}
+              {adminTab === 'agenda' ? 'Mi Agenda' : adminTab === 'tasks' ? 'Mi espacio' : adminTab === 'requests' ? 'Solicitudes' : adminTab === 'contacts' ? 'Directorio' : adminTab === 'processes' ? 'Trámites' : 'Equipo legal'}
             </h2>
             <p className="mt-1 text-sm text-[#626967]">
-              {adminTab === 'requests' ? 'Revisa y prioriza las solicitudes comerciales pendientes.' : adminTab === 'contacts' ? 'Primero empresas y clientes corporativos; después, personas y sus fichas.' : adminTab === 'processes' ? 'Gestiona los expedientes activos y consulta sus perfiles para ver los casos finalizados.' : 'Consulta responsables, perfiles y carga de trabajo del equipo.'}
+              {adminTab === 'agenda' ? 'Reuniones agendadas y resultados registrados.' : adminTab === 'tasks' ? 'Tareas, revisiones y vencimientos de los trámites.' : adminTab === 'requests' ? 'Revisa y prioriza las solicitudes comerciales pendientes.' : adminTab === 'contacts' ? 'Primero empresas y clientes corporativos; después, personas y sus fichas.' : adminTab === 'processes' ? 'Servicios aceptados en ejecución para todos los clientes. Cada trámite tiene sus tareas, documentos y cierre.' : 'Consulta responsables, perfiles y carga de trabajo del equipo.'}
             </p>
           </div>
         )}
-        
+
         {selectedCompany ? (
-          <CompanyRecordView 
-            company={selectedCompany} 
-            leads={leads} 
-            processes={processes} 
-            onBack={() => setSelectedCompany(null)} 
-            onOpenContact={(lead) => { setSelectedCompany(null); setSelectedLead(lead); }} 
+          <CompanyRecordView
+            company={selectedCompany}
+            leads={leads}
+            processes={processes}
+            onBack={() => setSelectedCompany(null)}
+            onOpenContact={(lead) => { setSelectedCompany(null); setSelectedLead(lead); }}
             onOpenProcess={(process) => setSelectedWorkflowProcess(process)}
             onAddContact={(newContact) => onAddManualLead(newContact)}
             onAddNote={(leadId, text, author) => onAddInternalNote(leadId, text, author)}
             onCreateProcess={(comp) => handleOpenConvertModal(null, comp)}
           />
         ) : selectedWorkflowProcess ? (
-          <WorkflowBoard 
-            process={selectedWorkflowProcess} 
-            lawyers={lawyers} 
-            onBack={() => setSelectedWorkflowProcess(null)} 
-            onBackLabel={selectedLead ? 'Volver al perfil del cliente' : selectedCompany ? 'Volver al perfil corporativo' : 'Volver a expedientes'} 
+          <WorkflowBoard
+            onReviewOrClose={onReviewOrClose} onSaveCaseControls={onSaveCaseControls} onStartCase={onStartCase}
+            process={selectedWorkflowProcess}
+            lawyers={lawyers}
+            onBack={() => setSelectedWorkflowProcess(null)}
+            onBackLabel={adminTab === 'tasks' ? 'Volver a mi espacio' : selectedLead ? 'Volver al perfil del cliente' : selectedCompany ? 'Volver al perfil corporativo' : 'Volver a trámites'}
           />
         ) : selectedLead ? (
           selectedLeadOrigin === 'requests' ? (
             <RequestDetailView
+              onSaveCommercial={(activity,revision) => onSaveCommercial({...selectedLead,revision},activity)}
+              onAcceptServices={onAcceptServices}
+              onSaveBudget={(budget, revision) => onSaveBudget({...selectedLead,revision}, budget)}
+              onSaveFollowUp={(followUp, revision) => onSaveFollowUp({ ...selectedLead, revision }, followUp)}
               lead={selectedLead}
               lawyers={lawyers}
               processes={processes}
               allLeads={leads}
               onBack={() => setSelectedLead(null)}
-              onBackLabel="Volver a solicitudes"
+              onBackLabel={adminTab === 'agenda' ? 'Volver a agenda' : 'Volver a solicitudes'}
               onUpdateLeadStatus={handleStatusChange}
               onUpdateLeadLawyer={handleLeadLawyerChange}
               onUpdateLeadBudget={handleLeadBudgetChange}
@@ -562,32 +597,31 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
               onUpdateLeadDocumentStatus={handleLeadDocumentStatusChange}
               onAddNote={(leadId, text, author) => {
                 onAddInternalNote(leadId, text, author);
-                setSelectedLead(prev => prev && prev.id === leadId ? { ...prev, internalNotes: [...prev.internalNotes, { id: 'note-' + Date.now(), author, text, timestamp: new Date().toISOString().replace('T', ' ').slice(0, 16) }] } : prev);
               }}
               onCreateProcess={handleConfirmConvert}
               onOpenProcess={(proc) => setSelectedWorkflowProcess(proc)}
               onOpenCompany={(company) => { setSelectedLead(null); setSelectedCompany(company); setContactDirectoryView('companies'); setAdminTab('contacts'); }}
             />
           ) : (
-            <ClientRecordView 
-              lead={selectedLead} 
-              processes={processes} 
+            <ClientRecordView
+              lead={selectedLead}
+              processes={processes}
               allLeads={leads}
-              onBack={() => setSelectedLead(null)} 
+              onBack={() => setSelectedLead(null)}
               onBackLabel="Volver al directorio"
-              onOpenCompany={(company) => { setSelectedLead(null); setSelectedCompany(company); setContactDirectoryView('companies'); setAdminTab('contacts'); }} 
-              onOpenProcess={setSelectedWorkflowProcess} 
+              onOpenCompany={(company) => { setSelectedLead(null); setSelectedCompany(company); setContactDirectoryView('companies'); setAdminTab('contacts'); }}
+              onOpenProcess={setSelectedWorkflowProcess}
               onOpenContact={(contact) => { setSelectedLead(contact); setSelectedLeadOrigin('contacts'); }}
-              onAddNote={(leadId, text, author) => { 
-                onAddInternalNote(leadId, text, author); 
-                setSelectedLead(prev => prev && prev.id === leadId ? { ...prev, internalNotes: [...prev.internalNotes, { id: 'note-' + Date.now(), author, text, timestamp: new Date().toISOString().replace('T', ' ').slice(0, 16) }] } : prev); 
-              }} 
+              onAddNote={(leadId, text, author) => {
+                onAddInternalNote(leadId, text, author);
+              }}
               onCreateProcess={(l) => handleOpenConvertModal(l)}
             />
           )
-        ) : adminTab === 'requests' ? (
+        ) : adminTab === 'agenda' ? (<MeetingAgenda leads={leads} filter={agendaFilter} onFilterChange={setAgendaFilter} onOpen={lead => {setSelectedLead(lead);setSelectedLeadOrigin('requests');}} />) : adminTab === 'tasks' ? (<TaskInbox processes={processes} filter={taskFilter} onFilterChange={setTaskFilter} onOpen={setSelectedWorkflowProcess} />) : adminTab === 'requests' ? (
           <>
             {/* Solicitudes: prioridad operativa, sin categoría de cliente activo */}
+            <p className="mb-3 text-xs text-slate-500">Los filtros cambian la vista; no modifican la situación de una solicitud ni completan tareas.</p>
             <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
               <button type="button" onClick={() => selectQuickFilter('new')} aria-pressed={quickFilter === 'new'} className={`text-left p-4 rounded-xl border shadow-sm transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${quickFilter === 'new' ? 'bg-amber-50 border-amber-500 ring-2 ring-amber-200 shadow-md' : 'bg-white border-amber-200 hover:border-amber-400 hover:shadow-md'}`}>
                 <div className="text-xs font-semibold text-amber-800 tracking-wide">Nuevas / sin atender</div><div className="mt-1 text-2xl font-extrabold text-slate-950 tabular-nums">{newRequests}</div><div className="mt-1 text-xs text-slate-500">Requieren primera revisión</div>
@@ -605,9 +639,9 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
 
         {/* Filter and View Mode Switcher */}
         <div className="bg-white p-4 rounded-2xl border border-slate-200/90 shadow-md flex flex-col md:flex-row items-stretch md:items-center justify-between gap-4">
-          
-          <div className="flex flex-1 items-center gap-3">
-            <div className="relative flex-1 max-w-md">
+
+          <div className="flex min-w-0 flex-1 flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+            <div className="relative min-w-0 flex-1 sm:min-w-64 sm:max-w-md">
               <Search className="w-4 h-4 text-neutral-400 absolute left-3 top-1/2 -translate-y-1/2" />
               <input
                 type="text"
@@ -618,7 +652,7 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
               />
             </div>
 
-            <div className="hidden sm:flex items-center gap-2">
+            <div className="flex min-w-0 items-center gap-2">
               <span className="text-xs text-neutral-500">Etapa:</span>
               <select
                 value={selectedStageFilter}
@@ -632,7 +666,7 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
               </select>
             </div>
 
-            <div className="hidden md:flex items-center gap-2">
+            <div className="flex min-w-0 items-center gap-2">
               <span className="text-xs text-neutral-500">Sector:</span>
               <select
                 value={selectedSectorFilter}
@@ -650,141 +684,49 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
             </div>
           </div>
 
-          {/* View switcher: list first, stages optional */}
-          <div className="flex items-center gap-1 p-1 bg-neutral-100 rounded-lg shrink-0 border border-neutral-200 self-end md:self-auto">
-            <button
-              onClick={() => setActiveView('table')}
-              className={`px-3 py-1 text-xs font-semibold rounded-md flex items-center gap-1.5 transition-colors ${activeView === 'table' ? 'bg-white text-neutral-900 shadow-xs' : 'text-neutral-600 hover:text-neutral-900'}`}
-            >
-              <List className="w-3.5 h-3.5" />
-              <span>Vista de lista</span>
-            </button>
-            <button
-              onClick={() => setActiveView('pipeline')}
-              className={`px-3 py-1 text-xs font-semibold rounded-md flex items-center gap-1.5 transition-colors ${activeView === 'pipeline' ? 'bg-white text-neutral-900 shadow-xs' : 'text-neutral-600 hover:text-neutral-900'}`}
-            >
-              <LayoutGrid className="w-3.5 h-3.5" />
-              <span>Etapas de seguimiento</span>
-            </button>
-          </div>
+          <ViewModeSwitch mode={requestViewMode} onChange={setRequestViewMode} />
 
                 </div>
-
-        {/* VIEW 1: PIPELINE / KANBAN */}
-        {activeView === 'pipeline' && (
-          <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 pb-6">
-            {STAGES_CONFIG.map((stage) => {
-              const stageLeads = filteredLeads.filter(l => l.status === stage.id);
-              return (
-                <div 
-                  key={stage.id} 
-                  className="bg-neutral-50/80 rounded-xl border border-neutral-200 p-3 flex flex-col min-w-0"
-                >
-                  {/* Column Header */}
-                  <div className="pb-3 mb-3 border-b border-neutral-200/90 flex items-center justify-between">
-                    <div>
-                      <h3 className="text-xs font-bold text-neutral-900">
-                        {stage.label}
-                      </h3>
-                      <p className="text-[10px] text-neutral-400 font-normal">
-                        {stage.desc}
-                      </p>
-                    </div>
-                    <span className="text-xs font-mono font-bold px-2 py-0.5 bg-neutral-200 rounded-full text-neutral-800 tabular-nums">
-                      {stageLeads.length}
-                    </span>
-                  </div>
-
-                  {/* Cards inside stage */}
-                  <div className="space-y-3 flex-1 overflow-y-auto max-h-[70vh]">
-                    {stageLeads.map((lead) => (
-                      <div
-                        key={lead.id}
-                        onClick={() => {
-                          setSelectedLead(lead);
-                          setSelectedLeadOrigin('requests');
-                        }}
-                        className="bg-white p-4 rounded-xl border border-slate-200/90 hover:border-[#0071ce]/50 shadow-md hover:shadow-lg transition-all cursor-pointer space-y-2 group"
-                      >
-                        <div className="flex items-start justify-between gap-1">
-                          <h4 className="text-xs font-bold text-[#3e4543] group-hover:text-neutral-800 transition-colors line-clamp-1">
-                            {lead.company}
-                          </h4>
-                          <span className="text-[10px] font-mono text-neutral-400 shrink-0">
-                            {lead.calculatedRiskScore}/100
-                          </span>
-                        </div>
-
-                        <div className="text-[11px] text-neutral-600 font-medium truncate">
-                          {lead.fullName}
-                        </div>
-
-                        <div className="text-[10px] text-neutral-400 truncate font-mono">
-                          {lead.stage} · {lead.industry}
-                        </div>
-
-                        {/* Areas tags */}
-                        <div className="flex flex-wrap gap-1 pt-1">
-                          {lead.areasOfInterest.slice(0, 2).map((area, i) => (
-                            <span key={i} className="text-[9px] bg-neutral-100 text-neutral-600 px-1.5 py-0.5 rounded">
-                              {area}
-                            </span>
-                          ))}
-                          {lead.areasOfInterest.length > 2 && (
-                            <span className="text-[9px] text-neutral-400">
-                              +{lead.areasOfInterest.length - 2}
-                            </span>
-                          )}
-                        </div>
-
-                        {/* Bottom card info & Convert action */}
-                        <div className="pt-2 border-t border-neutral-100 flex items-center justify-between text-[10px] text-neutral-400 font-mono">
-                          <span>{lead.createdAt.slice(5, 10)}</span>
-                          <span className="flex items-center gap-1 text-neutral-600 font-sans">
-                            <MessageSquare className="w-2.5 h-2.5" />
-                            <span>{lead.internalNotes.length}</span>
-                          </span>
-                        </div>
-
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleOpenConvertModal(lead);
-                          }}
-                          className="w-full mt-1.5 py-1.5 px-2 rounded-lg bg-blue-50 hover:bg-[#0071ce] text-[#0071ce] hover:text-white border border-blue-200 text-[10px] font-bold transition-all flex items-center justify-center gap-1 cursor-pointer"
-                          title="Convertir esta solicitud en expediente formal sin duplicidad de datos"
-                        >
-                          <Workflow className="w-3 h-3" />
-                          <span>Crear Expediente</span>
-                        </button>
-                      </div>
-                    ))}
-
-                    {stageLeads.length === 0 && (
-                      <div className="p-4 text-center text-xs text-neutral-400 italic">
-                        Sin solicitudes en esta etapa
-                      </div>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
 
         {/* VIEW 2: HIGH-DENSITY TABLE */}
-        {activeView === 'table' && (
-          <div className="bg-white rounded-xl border border-neutral-200 overflow-hidden shadow-xs">
+        {requestViewMode === 'cards' ? (
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            {visibleRequests.map(lead => (
+              <article key={lead.id} onClick={() => { setSelectedLead(lead); setSelectedLeadOrigin('requests'); }} className="min-w-0 cursor-pointer rounded-xl border border-neutral-200 bg-white p-4 shadow-sm transition-all hover:-translate-y-0.5 hover:border-blue-300 hover:shadow-md">
+                <div className="flex min-w-0 flex-wrap items-start justify-between gap-2">
+                  <div className="min-w-0 flex-1">
+                    <h3 className="break-words text-sm font-bold text-[#3e4543]">{lead.company || lead.fullName}</h3>
+                    <p className="break-words text-xs text-neutral-600">{lead.fullName} · {lead.email}</p>
+                  </div>
+                  <span className="max-w-full rounded-md bg-neutral-100 px-2 py-1 text-[11px] font-medium text-neutral-800">
+                    {STAGES_CONFIG.find(stage => stage.id === lead.status)?.label}
+                  </span>
+                </div>
+                <dl className="mt-3 grid grid-cols-2 gap-2 text-xs">
+                  <div className="min-w-0"><dt className="text-neutral-500">Etapa del negocio</dt><dd className="break-words font-medium text-neutral-800">{lead.stage || 'Sin definir'}</dd></div>
+                  <div className="min-w-0"><dt className="text-neutral-500">Fecha</dt><dd className="break-words font-medium text-neutral-800">{formatCrmDate(lead.createdAt)}</dd></div>
+                  <div className="min-w-0"><dt className="text-neutral-500">Sector</dt><dd className="break-words font-medium text-neutral-800">{lead.industry || 'Sin definir'}</dd></div>
+                  <div className="min-w-0"><dt className="text-neutral-500">Riesgo calculado</dt><dd className="font-medium text-neutral-800">{lead.source === 'manual' || lead.source === 'contact' ? 'Pendiente' : `${lead.calculatedRiskScore} / 100`}</dd></div>
+                </dl>
+                {lead.areasOfInterest.length > 0 && <div className="mt-3 flex flex-wrap gap-1" aria-label="Áreas marcadas">{lead.areasOfInterest.map((area, index) => <span key={`${area}-${index}`} className="rounded bg-neutral-100 px-2 py-1 text-[11px] text-neutral-700">{area}</span>)}</div>}
+                <div className="mt-4 flex flex-wrap gap-2 border-t border-neutral-100 pt-3">
+                  <button type="button" onClick={event => { event.stopPropagation(); handleOpenConvertModal(lead); }} className="inline-flex min-h-9 items-center gap-1 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-semibold text-[#0071ce]"><Workflow className="h-3.5 w-3.5" />Revisar solicitud</button>
+                  <button type="button" onClick={event => { event.stopPropagation(); setSelectedLead(lead); setSelectedLeadOrigin('requests'); }} className="min-h-9 rounded-lg border border-neutral-200 px-3 py-2 text-xs font-semibold text-neutral-900">Ver detalle</button>
+                </div>
+              </article>
+            ))}
+          </div>
+) : (
+          <div className="min-w-0 rounded-xl border border-neutral-200 bg-white shadow-xs">
             <div className="overflow-x-auto">
-              <table className="w-full table-fixed text-left border-collapse text-xs">
+              <table className="w-full min-w-[1040px] table-fixed text-left border-collapse text-xs">
                 <colgroup>
-                  <col style={{ width: '22%' }} />
-                  <col style={{ width: '15%' }} />
+                  <col style={{ width: '21%' }} />
+                  <col style={{ width: '14%' }} />
                   <col style={{ width: '17%' }} />
                   <col style={{ width: '10%' }} />
                   <col style={{ width: '16%' }} />
-                  <col style={{ width: '10%' }} />
+                  <col style={{ width: '12%' }} />
                   <col style={{ width: '10%' }} />
                 </colgroup>
                 <thead>
@@ -799,9 +741,9 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-neutral-200 text-neutral-700">
-                  {[...filteredLeads].filter(lead => lead.status !== 'cliente_activo').sort((a,b) => { const order: Record<string, number> = { nuevo_lead: 0, diagnostico_enviado: 1, sesion_programada: 2, propuesta_presentada: 3 }; return (order[a.status] ?? 99) - (order[b.status] ?? 99) || a.fullName.localeCompare(b.fullName, 'es', { sensitivity: 'base' }); }).map((lead) => (
-                    <tr 
-                      key={lead.id} 
+                  {visibleRequests.map((lead) => (
+                    <tr
+                      key={lead.id}
                       onClick={() => {
                         setSelectedLead(lead);
                         setSelectedLeadOrigin('requests');
@@ -827,7 +769,7 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
                       </td>
                       <td className="py-3 px-4 font-mono tabular-nums font-semibold">
                         <span className={lead.calculatedRiskScore >= 70 ? 'text-red-700' : 'text-neutral-800'}>
-                          {lead.calculatedRiskScore} / 100
+                          {lead.source === 'manual' || lead.source === 'contact' ? 'Pendiente' : lead.calculatedRiskScore + ' / 100'}
                         </span>
                       </td>
                       <td className="py-3 px-4">
@@ -836,7 +778,7 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
                         </span>
                       </td>
                       <td className="py-3 px-4 font-mono text-neutral-400 text-[11px]">
-                        {lead.createdAt}
+                        {formatCrmDate(lead.createdAt)}
                       </td>
                       <td className="py-3 px-4 text-right">
                         <div className="flex items-center justify-end gap-1.5">
@@ -847,21 +789,10 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
                               handleOpenConvertModal(lead);
                             }}
                             className="px-2.5 py-1 text-xs font-bold text-[#0071ce] bg-blue-50 hover:bg-blue-100 rounded-lg border border-blue-200 transition-colors inline-flex items-center gap-1 cursor-pointer"
-                            title="Convertir esta solicitud en expediente formal sin duplicidad de datos"
+                            title="Abrir esta solicitud para revisarla"
                           >
                             <Workflow className="w-3 h-3" />
-                            <span>Expediente</span>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setSelectedLead(lead);
-                              setSelectedLeadOrigin('requests');
-                            }}
-                            className="px-2.5 py-1 text-xs font-semibold text-neutral-900 hover:bg-neutral-100 rounded-lg border border-neutral-200 transition-colors cursor-pointer"
-                          >
-                            Ver Detalle
+                            <span>Revisar</span>
                           </button>
                         </div>
                       </td>
@@ -873,8 +804,9 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
           </div>
         )}
           </>
-        ) : adminTab === 'contacts' ? (
+        ) : adminTab === 'contacts' ? ((isAdmin || preview) ? (
           <section className="w-full min-w-0 space-y-5">
+            {isAdmin && !preview && <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><h2 className="font-bold text-slate-900">Vínculos de contacto del equipo</h2><p className="mt-1 text-xs text-slate-500">El integrante elegido verá solo este contacto adicional en su Directorio.</p><div className="mt-3 flex flex-wrap gap-2"><select aria-label="Contacto a vincular" value={linkLeadId} onChange={event=>setLinkLeadId(event.target.value)} className="min-w-0 flex-1 rounded-lg border border-slate-300 bg-white p-2 text-xs"><option value="">Elegir contacto</option>{leads.map(lead=><option key={lead.id} value={lead.id}>{lead.fullName} · {lead.company}</option>)}</select><select aria-label="Integrante del equipo" value={linkStaffUid} onChange={event=>setLinkStaffUid(event.target.value)} className="min-w-0 flex-1 rounded-lg border border-slate-300 bg-white p-2 text-xs"><option value="">Elegir integrante</option>{staffAccounts.map(account=><option key={account.userId} value={account.userId}>{account.displayName}</option>)}</select><button type="button" disabled={!linkLeadId||!linkStaffUid||contactLinks.some(link=>link.leadId===linkLeadId&&link.staffUid===linkStaffUid)} onClick={()=>{const lead=leads.find(item=>item.id===linkLeadId);if(lead)void addDoc(collection(db,'contactLinks'),{staffUid:linkStaffUid,leadId:lead.id,name:lead.fullName,email:lead.email,company:lead.company,createdAt:new Date().toISOString()}).then(()=>{setLinkLeadId('');setLinkStaffUid('');});}} className="rounded-lg bg-blue-700 px-4 py-2 text-xs font-semibold text-white disabled:opacity-50">Vincular</button></div>{contactLinks.length>0&&<div className="mt-3 space-y-2">{contactLinks.map(link=><div key={link.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-slate-50 px-3 py-2 text-xs"><span>{link.name} · {staffAccounts.find(item=>item.userId===link.staffUid)?.displayName||'Integrante'}</span><button type="button" onClick={()=>void deleteDoc(doc(db,'contactLinks',link.id))} className="rounded-lg px-2 py-1 font-semibold text-red-700 hover:bg-red-50">Revocar</button></div>)}</div>}</div>}
             {(() => {
               // Helper to normalize strings for robust grouping
               const normStr = (s?: string) => (s || '').trim().toLowerCase().replace(/\s+/g, ' ');
@@ -930,7 +862,7 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
                 const emails = new Set(comp.contacts.map(c => c.email.toLowerCase()));
                 const names = new Set(comp.contacts.map(c => c.fullName.toLowerCase()));
 
-                comp.relatedProcesses = processes.filter(p => 
+                comp.relatedProcesses = processes.filter(p =>
                   normStr(p.companyName) === comp.normalizedName ||
                   emails.has((p.clientEmail || '').toLowerCase()) ||
                   names.has((p.clientName || '').toLowerCase())
@@ -945,18 +877,18 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
               // 2. Filter Companies
               const filteredCompanies = companiesList.filter(comp => {
                 const q = searchQuery.toLowerCase().trim();
-                const matchesSearch = !q || 
+                const matchesSearch = !q ||
                   comp.name.toLowerCase().includes(q) ||
                   comp.industry.toLowerCase().includes(q) ||
                   (comp.rif && comp.rif.toLowerCase().includes(q)) ||
-                  comp.contacts.some(c => 
+                  comp.contacts.some(c =>
                     c.fullName.toLowerCase().includes(q) ||
                     c.email.toLowerCase().includes(q) ||
                     (c.phone && c.phone.toLowerCase().includes(q)) ||
                     (c.jobTitle && c.jobTitle.toLowerCase().includes(q))
                   );
 
-                const matchesSector = contactSectorFilter === 'all' || 
+                const matchesSector = contactSectorFilter === 'all' ||
                   comp.industry.toLowerCase().includes(contactSectorFilter.toLowerCase());
 
                 const matchesStatus = contactStatusFilter === 'all' ||
@@ -977,10 +909,10 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
                   (lead.jobTitle && lead.jobTitle.toLowerCase().includes(q)) ||
                   lead.industry.toLowerCase().includes(q);
 
-                const matchesSector = contactSectorFilter === 'all' || 
+                const matchesSector = contactSectorFilter === 'all' ||
                   lead.industry.toLowerCase().includes(contactSectorFilter.toLowerCase());
 
-                const leadProcesses = processes.filter(p => 
+                const leadProcesses = processes.filter(p =>
                   (p.clientEmail || '').toLowerCase() === lead.email.toLowerCase() ||
                   (p.clientName || '').toLowerCase() === lead.fullName.toLowerCase()
                 );
@@ -1002,10 +934,10 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
 
               return (
                 <div className="space-y-4">
-                  
+
                   {/* Top Bar: Selector de Directorio (Empresas vs Personas) & Acciones */}
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white p-2.5 rounded-2xl border border-slate-200/90 shadow-xs">
-                    
+
                     {/* Segmented view switcher */}
                     <div className="flex items-center gap-1.5 p-1 bg-slate-100 rounded-xl">
                       <button
@@ -1054,7 +986,7 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
 
                   {/* Search and Filters Bar */}
                   <div className="bg-white p-3.5 rounded-2xl border border-slate-200/90 shadow-xs flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
-                    
+
                     {/* Search input */}
                     <div className="relative flex-1 max-w-lg">
                       <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
@@ -1113,8 +1045,12 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
 
                   </div>
 
+                  <div className="flex flex-wrap items-center justify-between gap-2"><p className="text-xs text-slate-500">{contactDirectoryView==='companies'?filteredCompanies.length:filteredPeople.length} resultados</p><ViewModeSwitch mode={directoryViewMode} onChange={setDirectoryViewMode}/></div>
+                  {directoryViewMode==='cards'&&contactDirectoryView==='companies'&&<div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{filteredCompanies.map(comp=><article key={comp.normalizedName} className="min-w-0 rounded-xl border border-slate-200 bg-white p-4 shadow-sm transition-all hover:border-blue-300 hover:shadow-md"><button type="button" onClick={()=>setSelectedCompany(comp.name)} className="w-full break-words text-left text-sm font-bold text-blue-800 hover:text-blue-950">{comp.name}</button><p className="mt-1 break-words text-xs text-slate-600">{comp.industry} · {comp.stage}</p><p className="mt-3 text-xs text-slate-700">{comp.contacts.length} contactos · {comp.activeProcesses.length} trámites activos</p><p className="mt-1 break-words text-xs text-slate-600">{comp.contacts.slice(0,2).map(contact=>contact.fullName).join(', ')}</p><button type="button" onClick={()=>setSelectedCompany(comp.name)} className="mt-3 rounded-lg bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-900 hover:bg-blue-100">Ver empresa</button></article>)}{filteredCompanies.length===0&&<p className="col-span-full rounded-xl border border-dashed bg-white p-6 text-center text-sm text-slate-500">No se encontraron empresas.</p>}</div>}
+                  {directoryViewMode==='cards'&&contactDirectoryView==='people'&&<div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{filteredPeople.map(lead=><article key={lead.id} className="min-w-0 rounded-xl border border-slate-200 bg-white p-4 shadow-sm transition-all hover:border-blue-300 hover:shadow-md"><button type="button" onClick={()=>{setSelectedLead(lead);setSelectedLeadOrigin('contacts');}} className="w-full break-words text-left text-sm font-bold text-blue-800 hover:text-blue-950">{lead.fullName}</button><p className="mt-1 break-words text-xs text-slate-600">{lead.jobTitle||'Contacto'} · {lead.company||'Particular'}</p><p className="mt-3 break-all text-xs text-slate-700">{lead.email}</p>{lead.phone&&<p className="mt-1 text-xs text-slate-600">{lead.phone}</p>}<button type="button" onClick={()=>{setSelectedLead(lead);setSelectedLeadOrigin('contacts');}} className="mt-3 rounded-lg bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-900 hover:bg-blue-100">Ver persona</button></article>)}{filteredPeople.length===0&&<p className="col-span-full rounded-xl border border-dashed bg-white p-6 text-center text-sm text-slate-500">No se encontraron personas.</p>}</div>}
+
                   {/* VIEW 1: COMPANIES TABLE (High-density, coherent, 1-to-N relationships) */}
-                  {contactDirectoryView === 'companies' && (
+                  {contactDirectoryView === 'companies' && directoryViewMode === 'list' && (
                     <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-xs">
                       <div className="overflow-x-auto">
                         <table className="w-full table-fixed border-collapse text-left text-xs">
@@ -1139,7 +1075,7 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
                           <tbody className="divide-y divide-slate-100 text-slate-700">
                             {filteredCompanies.map((comp) => {
                               const isAccountActive = comp.isClientActive || comp.activeProcesses.length > 0;
-                              const primaryLawyer = comp.assignedLawyers[0] || 'José Rafael Vásquez';
+                              const primaryLawyer = comp.assignedLawyers[0] || 'Elena Marín';
 
                               return (
                                 <tr
@@ -1270,7 +1206,7 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
                   )}
 
                   {/* VIEW 2: PEOPLE TABLE (High-density, coherent with companies) */}
-                  {contactDirectoryView === 'people' && (
+                  {contactDirectoryView === 'people' && directoryViewMode === 'list' && (
                     <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-xs">
                       <div className="overflow-x-auto">
                         <table className="w-full table-fixed border-collapse text-left text-xs">
@@ -1294,8 +1230,8 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
                           </thead>
                           <tbody className="divide-y divide-slate-100 text-slate-700">
                             {filteredPeople.map((lead) => {
-                              const related = processes.filter(p => 
-                                (p.clientEmail || '').toLowerCase() === lead.email.toLowerCase() || 
+                              const related = processes.filter(p =>
+                                (p.clientEmail || '').toLowerCase() === lead.email.toLowerCase() ||
                                 (p.clientName || '').toLowerCase() === lead.fullName.toLowerCase()
                               );
                               const activeCases = related.filter(p => p.status !== 'completado').length;
@@ -1340,7 +1276,7 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
                                           e.stopPropagation();
                                           setSelectedCompany(lead.company);
                                         }}
-                                        className="font-semibold text-[#0071ce] hover:underline text-left truncate max-w-full block cursor-pointer"
+                                        className="block max-w-full truncate rounded-md px-1 py-0.5 text-left font-semibold text-[#0071ce] transition-all hover:bg-blue-50 hover:text-[#004f91] hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
                                         title={`Abrir perfil de ${lead.company}`}
                                       >
                                         <span className="flex items-center gap-1">
@@ -1391,8 +1327,8 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
                                   {/* Status */}
                                   <td className="py-3.5 px-4">
                                     <span className={`inline-flex px-2 py-0.5 rounded text-[11px] font-semibold ${
-                                      lead.status === 'cliente_activo' 
-                                        ? 'bg-emerald-50 text-emerald-800' 
+                                      lead.status === 'cliente_activo'
+                                        ? 'bg-emerald-50 text-emerald-800'
                                         : 'bg-slate-100 text-slate-700'
                                     }`}>
                                       {lead.status === 'cliente_activo' ? 'Cliente activo' : 'Contacto'}
@@ -1436,12 +1372,12 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
                 </div>
               );
             })()}
-          </section>
+          </section>) : <StaffDirectory processes={processes} links={contactLinks} uid={userProfile?.userId || ''} />
         ) : adminTab === 'lawyers' ? (
           <div className="space-y-5">
             {selectedLawyer ? (
               <div className="space-y-4">
-                <button type="button" onClick={() => setSelectedLawyer(null)} className="text-sm font-semibold text-[#3e4543] hover:underline">← Volver al equipo legal</button>
+                <button type="button" onClick={() => setSelectedLawyer(null)} className="rounded-lg px-3 py-2 text-sm font-semibold text-[#3e4543] transition-all hover:bg-blue-50 hover:text-[#004f91] hover:shadow-sm">← Volver al equipo legal</button>
                 {(() => {
                   const assignedCases = processes.filter(p => (p.assignedLawyer || '').trim().toLowerCase() === selectedLawyer.trim().toLowerCase());
                   const activeCases = assignedCases.filter(p => p.status !== 'completado');
@@ -1455,7 +1391,7 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
                       </div>
                       <form className="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-3" onSubmit={e => { e.preventDefault(); setLawyerProfiles(prev => ({ ...prev, [selectedLawyer]: { ...lawyerProfileDraft } })); }}>
                         <label className="text-xs font-semibold text-neutral-700">Especialidad<input value={profile.specialty} onChange={e => setLawyerProfileDraft(p => ({ ...p, specialty: e.target.value }))} className="mt-1 w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm font-normal" placeholder="Ej. Corporativo, laboral..." /></label>
-                        <label className="text-xs font-semibold text-neutral-700">Correo<input type="email" value={profile.email} onChange={e => setLawyerProfileDraft(p => ({ ...p, email: e.target.value }))} className="mt-1 w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm font-normal" placeholder="abogado@binlegal.com" /></label>
+                        <label className="text-xs font-semibold text-neutral-700">Correo<input type="email" value={profile.email} onChange={e => setLawyerProfileDraft(p => ({ ...p, email: e.target.value }))} className="mt-1 w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm font-normal" placeholder="abogado@example.test" /></label>
                         <label className="text-xs font-semibold text-neutral-700">Teléfono<input value={profile.phone} onChange={e => setLawyerProfileDraft(p => ({ ...p, phone: e.target.value }))} className="mt-1 w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm font-normal" placeholder="Teléfono de contacto" /></label>
                         <label className="text-xs font-semibold text-neutral-700 sm:col-span-2">Notas internas del perfil<textarea value={profile.notes} onChange={e => setLawyerProfileDraft(p => ({ ...p, notes: e.target.value }))} rows={3} className="mt-1 w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm font-normal" placeholder="Observaciones, responsabilidades, disponibilidad..." /></label>
                         <div className="sm:col-span-2 flex justify-end"><button type="submit" className="rounded-lg bg-[#3e4543] px-4 py-2 text-sm font-semibold text-white">Guardar perfil</button></div>
@@ -1491,9 +1427,11 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
                   <input value={newLawyerName} onChange={e => setNewLawyerName(e.target.value)} placeholder="Nombre del abogado/a" className="flex-1 rounded-lg border border-neutral-300 px-3 py-2 text-sm" />
                   <button type="submit" className="rounded-lg bg-[#3e4543] px-4 py-2 text-sm font-semibold text-white">Añadir abogado</button>
                 </form>
-                <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
+                <div className="flex flex-wrap items-center justify-between gap-2"><span className="text-xs text-slate-500">{lawyers.length} integrantes</span><ViewModeSwitch mode={teamViewMode} onChange={setTeamViewMode}/></div>
+                {teamViewMode==='list'&&<div className="overflow-x-auto rounded-xl border border-slate-200"><table className="w-full min-w-[620px] table-fixed text-left text-xs"><thead><tr className="border-b bg-slate-50 text-[10px] font-semibold uppercase tracking-wide text-slate-500"><th className="w-[34%] px-4 py-3">Integrante</th><th className="w-[30%] px-4 py-3">Especialidad</th><th className="w-[18%] px-4 py-3">Trámites activos</th><th className="w-[18%] px-4 py-3 text-right">Acción</th></tr></thead><tbody className="divide-y divide-slate-100">{lawyers.map(lawyer=><tr key={lawyer} className="hover:bg-blue-50/70"><td className="break-words px-4 py-3 font-semibold text-slate-900">{lawyer}</td><td className="break-words px-4 py-3">{lawyerProfiles[lawyer]?.specialty||'Sin indicar'}</td><td className="px-4 py-3">{processes.filter(process=>process.status!=='completado'&&(process.assignedLawyer||'').trim().toLowerCase()===lawyer.trim().toLowerCase()).length}</td><td className="px-4 py-3 text-right"><button type="button" onClick={()=>setSelectedLawyer(lawyer)} className="rounded-lg border border-blue-200 px-3 py-2 font-semibold text-blue-800 hover:bg-blue-50">Ver perfil</button></td></tr>)}</tbody></table></div>}
+                {teamViewMode==='cards'&&<div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
                   {lawyers.map(lawyer => { const assigned = processes.filter(p => (p.assignedLawyer || '').trim().toLowerCase() === lawyer.trim().toLowerCase()); const active = assigned.filter(p => p.status !== 'completado').length; return <div key={lawyer} className="rounded-xl border border-neutral-200 bg-neutral-50 p-4"><button type="button" onClick={() => setSelectedLawyer(lawyer)} className="w-full text-left"><div className="flex items-center gap-3"><div className="flex h-11 w-11 items-center justify-center rounded-full bg-[#e0effb] text-[#004f91] font-bold">{lawyer.split(' ').map(n => n[0]).slice(0,2).join('')}</div><div className="min-w-0"><div className="font-semibold text-sm text-neutral-900">{lawyer}</div><div className="text-xs text-neutral-500">{lawyerProfiles[lawyer]?.specialty || 'Ver perfil y casos'}</div></div></div><div className="mt-3 flex gap-3 text-xs text-neutral-600"><span>{active} activos</span><span>{assigned.length - active} completados</span></div></button></div>; })}
-                </div>
+                </div>}
                 <p className="text-xs text-neutral-500">Los perfiles y la lista se guardan en este navegador; los expedientes y su historial se leen de los datos del CRM.</p>
               </div>
             )}
@@ -1503,13 +1441,15 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
           <div className="space-y-5">
             {(() => {
               const activeProcesses = processes.filter(p => p.status !== 'completado');
-              const visibleProcesses = activeProcesses.filter(p => processQuickFilter === 'active' || p.status === processQuickFilter);
+              const visibleProcesses = activeProcesses.filter(p => processQuickFilter === 'active' || (processQuickFilter === 'unassigned' && canAssignCases && pendingAssignment(p)) || (processQuickFilter === 'ready' && p.caseStage === 'final_review') || (processQuickFilter === 'recaudos' && p.status === 'recaudos' && !pendingAssignment(p)) || (p.status === processQuickFilter && processQuickFilter !== 'recaudos'));
               const cards = [
-                { id: 'active' as const, label: 'Expedientes en trámite', count: activeProcesses.length, desc: 'Trabajo legal activo', color: 'blue' },
+                { id: 'active' as const, label: 'Todos los trámites activos', count: activeProcesses.length, desc: 'Servicios aceptados', color: 'blue' },
+                ...(canAssignCases ? [{ id: 'unassigned' as const, label: 'Nuevos - pendientes por asignar', count: activeProcesses.filter(pendingAssignment).length, desc: 'Requieren responsable', color: 'amber' }] : []),
+                { id: 'recaudos' as const, label: 'Pendientes por recaudos', count: activeProcesses.filter(p => p.status === 'recaudos' && !pendingAssignment(p)).length, desc: 'Documentación por reunir', color: 'slate' },
                 { id: 'redaccion' as const, label: 'En redacción', count: activeProcesses.filter(p => p.status === 'redaccion').length, desc: 'Documentos en preparación', color: 'violet' },
-                { id: 'tramite_publico' as const, label: 'En organismo público', count: activeProcesses.filter(p => p.status === 'tramite_publico').length, desc: 'Gestión ante el organismo', color: 'teal' },
                 { id: 'revision' as const, label: 'En revisión', count: activeProcesses.filter(p => p.status === 'revision').length, desc: 'Validación pendiente', color: 'amber' },
-                { id: 'recaudos' as const, label: 'En recaudos', count: activeProcesses.filter(p => p.status === 'recaudos').length, desc: 'Documentación por reunir', color: 'slate' }
+                { id: 'tramite_publico' as const, label: 'En organismo público', count: activeProcesses.filter(p => p.status === 'tramite_publico').length, desc: 'Gestión ante el organismo', color: 'teal' },
+                { id: 'ready' as const, label: 'Listos para entregar al cliente', count: activeProcesses.filter(p => p.caseStage === 'final_review').length, desc: 'Revisión final completada', color: 'blue' }
               ];
               const styles: Record<string, { active: string; idle: string }> = {
                 blue: { active: 'bg-blue-50 border-blue-500 ring-2 ring-blue-100 shadow-md', idle: 'bg-white border-slate-200 hover:border-blue-300 hover:shadow-md' },
@@ -1519,7 +1459,7 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
                 slate: { active: 'bg-slate-100 border-slate-500 ring-2 ring-slate-100 shadow-md', idle: 'bg-white border-slate-200 hover:border-slate-400 hover:shadow-md' }
               };
               return <>
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
                   {cards.map(card => <button key={card.id} type="button" aria-pressed={processQuickFilter === card.id} onClick={() => setProcessQuickFilter(card.id)} className={`rounded-xl border p-4 text-left transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${processQuickFilter === card.id ? styles[card.color].active : styles[card.color].idle}`}>
                     <div className="text-xs font-semibold tracking-wide text-slate-700">{card.label}</div>
                     <div className="mt-1 text-2xl font-extrabold tabular-nums text-slate-950">{card.count}</div>
@@ -1530,11 +1470,11 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
                   <div className="flex flex-col gap-2 border-b border-slate-200 p-4 sm:flex-row sm:items-center sm:justify-between">
                     <div>
                       <h3 className="text-sm font-bold text-slate-900">{cards.find(card => card.id === processQuickFilter)?.label}</h3>
-                      <p className="text-xs text-slate-500">Selecciona el nombre de un trámite para abrir su expediente completo.</p>
+                      <p className="text-xs text-slate-500">Selecciona cualquier trámite para ver sus tareas, documentos y avance.</p>
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2"><ViewModeSwitch mode={processViewMode} onChange={setProcessViewMode} />
                       <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">
-                        {visibleProcesses.length} {visibleProcesses.length === 1 ? 'expediente' : 'expedientes'}
+                        {visibleProcesses.length} {visibleProcesses.length === 1 ? 'trámite' : 'trámites'}
                       </span>
                       <button
                         type="button"
@@ -1542,23 +1482,33 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
                         className="inline-flex items-center gap-1.5 text-xs font-bold text-white bg-[#0071ce] hover:bg-[#005ba7] px-3 py-1.5 rounded-xl shadow-xs transition-colors cursor-pointer"
                       >
                         <Plus className="w-3.5 h-3.5" />
-                        <span>⚡ Nuevo Expediente</span>
+                        <span>Crear desde solicitud</span>
                       </button>
                     </div>
                   </div>
-                  <div className="overflow-x-auto">
-                    <table className="w-full table-fixed border-collapse text-left text-xs">
+                  <div className={processViewMode==='cards'?'grid gap-3 p-3 sm:grid-cols-2 xl:grid-cols-3':'hidden'}>
+                    {visibleProcesses.map(proc => <article key={proc.id} className="min-w-0 rounded-xl border border-slate-200 bg-white p-4 shadow-sm transition-all hover:border-blue-300 hover:shadow-md">
+                      <button type="button" onClick={() => setSelectedWorkflowProcess(proc)} className="w-full break-words rounded-md px-1 py-1 text-left text-sm font-bold text-blue-800 transition-all hover:bg-blue-50 hover:text-blue-950 hover:shadow-sm">{proc.title}</button>
+                      <p className="mt-1 break-words text-xs text-slate-600">{proc.clientName || proc.clientEmail} · {proc.companyName || 'Cliente particular'}</p>
+                      <div className="mt-3 grid grid-cols-2 gap-2 text-xs"><p className="min-w-0 break-words"><span className="text-slate-500">Estado</span><br/><strong>{proc.status.replace('_', ' ')}</strong></p><p className="min-w-0 break-words"><span className="text-slate-500">Abogado líder</span><br/><strong>{proc.assignedLawyer || 'Sin asignar'}</strong></p><p className="min-w-0 break-words"><span className="text-slate-500">Categoría</span><br/><strong>{proc.category}</strong></p><p><span className="text-slate-500">Avance</span><br/><strong>{proc.progress}%</strong></p></div>
+                      <p className="mt-3 break-words text-xs text-slate-600">Próximo hito: {proc.nextMilestone || 'Sin hito definido'}</p>{assignmentControl(proc)}
+                      <div className="mt-4 flex flex-wrap gap-2"><button type="button" onClick={() => setSelectedWorkflowProcess(proc)} className="rounded-lg bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-900">Abrir trámite</button><button type="button" onClick={() => setSelectedProcessToEdit(proc)} className="rounded-lg border px-3 py-2 text-xs font-semibold">Actualizar</button></div>
+                    </article>)}
+                    {visibleProcesses.length === 0 && <p className="col-span-full rounded-xl border border-dashed p-6 text-center text-sm text-slate-500">No hay trámites en esta etapa.</p>}
+                  </div>
+                  <div className={processViewMode==='list'?'overflow-x-auto':'hidden'}>
+                    <table className="w-full min-w-[1100px] table-fixed border-collapse text-left text-xs">
                       <colgroup><col style={{ width: '22%' }} /><col style={{ width: '13%' }} /><col style={{ width: '15%' }} /><col style={{ width: '14%' }} /><col style={{ width: '8%' }} /><col style={{ width: '14%' }} /><col style={{ width: '14%' }} /></colgroup>
                       <thead><tr className="border-b border-slate-200 bg-slate-50 text-[10px] font-semibold uppercase tracking-wider text-slate-500 sm:text-xs"><th className="px-4 py-3">Trámite</th><th className="px-4 py-3">Categoría</th><th className="px-4 py-3">Abogado líder</th><th className="px-4 py-3">Estado actual</th><th className="px-4 py-3">Avance</th><th className="px-4 py-3">Próximo hito</th><th className="px-4 py-3 text-right">Acciones</th></tr></thead>
                       <tbody className="divide-y divide-slate-100 text-slate-700">
                         {visibleProcesses.slice().sort((a,b) => (a.status === 'recaudos' ? 0 : a.status === 'redaccion' ? 1 : a.status === 'tramite_publico' ? 2 : a.status === 'revision' ? 3 : 4) - (b.status === 'recaudos' ? 0 : b.status === 'redaccion' ? 1 : b.status === 'tramite_publico' ? 2 : b.status === 'revision' ? 3 : 4) || a.title.localeCompare(b.title, 'es', { sensitivity: 'base' })).map(proc => <tr key={proc.id} className="cursor-pointer transition-colors duration-150 hover:bg-blue-50/70 focus-within:bg-blue-50/70" onClick={() => setSelectedWorkflowProcess(proc)}>
-                          <td className="px-4 py-3"><button type="button" onClick={(e) => { e.stopPropagation(); setSelectedWorkflowProcess(proc); }} className="line-clamp-2 text-left font-bold text-blue-800 underline-offset-2 transition-colors hover:text-blue-600 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">{proc.title}</button><div className="mt-1 truncate text-[11px] text-slate-500">{proc.clientName} · {proc.companyName || proc.clientEmail}</div></td>
+                          <td className="px-4 py-3"><button type="button" onClick={(e) => { e.stopPropagation(); setSelectedWorkflowProcess(proc); }} className="line-clamp-2 rounded-md px-1 py-1 text-left font-bold text-blue-800 transition-all hover:bg-blue-50 hover:text-blue-950 hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">{proc.title}</button><div className="mt-1 truncate text-[11px] text-slate-500">{proc.clientName} · {proc.companyName || proc.clientEmail}</div></td>
                           <td className="break-words px-4 py-3 text-[11px]">{proc.category}</td>
                           <td className="break-words px-4 py-3 font-semibold text-slate-900">{proc.assignedLawyer || 'Sin asignar'}</td>
                           <td className="px-4 py-3"><span className="inline-flex rounded-full bg-blue-50 px-2 py-1 text-[10px] font-semibold uppercase text-blue-800">{proc.status.replace('_', ' ')}</span></td>
                           <td className="px-4 py-3 font-mono font-bold tabular-nums">{proc.progress}%</td>
                           <td className="px-4 py-3"><div className="line-clamp-2 text-slate-600">{proc.nextMilestone || 'Sin hito definido'}</div></td>
-                          <td className="px-4 py-3 text-right"><button type="button" onClick={(e) => { e.stopPropagation(); setSelectedProcessToEdit(proc); }} className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-slate-700 transition-all hover:-translate-y-0.5 hover:border-blue-300 hover:text-blue-800 hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Actualizar</button></td>
+                          <td className="px-4 py-3 text-right">{assignmentControl(proc)}<button type="button" onClick={(e) => { e.stopPropagation(); setSelectedProcessToEdit(proc); }} className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-slate-700 transition-all hover:-translate-y-0.5 hover:border-blue-300 hover:text-blue-800 hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Actualizar</button></td>
                         </tr>)}
                         {visibleProcesses.length === 0 && <tr><td colSpan={7} className="px-4 py-12 text-center text-sm text-slate-500">No hay expedientes en esta etapa. Los trámites finalizados se consultan desde los perfiles de cliente y empresa.</td></tr>}
                       </tbody>
@@ -1576,7 +1526,7 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
 
       {/* ADD MANUAL LEAD MODAL */}
       {showAddLeadModal && (
-        <div 
+        <div
           className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-neutral-950/65 backdrop-blur-xs animate-in fade-in overflow-y-auto"
           role="dialog"
           aria-modal="true"
@@ -1584,7 +1534,7 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
             if (e.target === e.currentTarget) setShowAddLeadModal(false);
           }}
         >
-          <div 
+          <div
             className="bg-white w-full max-w-xl rounded-2xl border border-neutral-200 shadow-2xl p-6 sm:p-8 max-h-[92dvh] overflow-y-auto relative animate-in zoom-in-95 my-auto"
             onClick={(e) => e.stopPropagation()}
           >
@@ -1607,7 +1557,8 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
               </button>
             </div>
 
-            <form onSubmit={handleSaveManualLead} className="space-y-4 text-xs">
+            <form aria-busy={manualSaving} onSubmit={handleSaveManualLead} className="space-y-4 text-xs">
+              {manualError && <p role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{manualError}</p>}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block font-semibold text-neutral-700 mb-1">Nombre completo *</label>
@@ -1621,10 +1572,9 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
                   />
                 </div>
                 <div>
-                  <label className="block font-semibold text-neutral-700 mb-1">Empresa / Proyecto *</label>
+                  <label className="block font-semibold text-neutral-700 mb-1">Empresa / Proyecto (opcional)</label>
                   <input
                     type="text"
-                    required
                     value={newCompany}
                     onChange={(e) => setNewCompany(e.target.value)}
                     placeholder="Ej. Páez & Co Logística"
@@ -1704,7 +1654,7 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
                   Cancelar
                 </button>
                 <button
-                  type="submit"
+                  type="submit" disabled={manualSaving}
                   className="px-5 py-2 font-semibold text-white bg-[#3e4543] rounded-lg hover:bg-[#323836] transition-colors shadow-xs"
                 >
                   Guardar en Pipeline
@@ -1717,7 +1667,7 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
 
             {/* EDIT PROCESS STATUS MODAL FOR ADMIN */}
       {selectedProcessToEdit && (
-        <div 
+        <div
           className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-neutral-950/60 backdrop-blur-xs animate-in fade-in"
           role="dialog"
           aria-modal="true"
@@ -1765,7 +1715,7 @@ export const AdminCRM: React.FC<AdminCRMProps> = ({
                   <option value="redaccion">2. Redacción (En redacción por equipo legal)</option>
                   <option value="tramite_publico">3. Ente Público (SAPI / Registro / Notaría)</option>
                   <option value="revision">4. Revisión (Revisión y visto bueno final)</option>
-                  <option value="completado">5. Finalizado (Trámite entregado y blindado)</option>
+
                 </select>
               </div>
 

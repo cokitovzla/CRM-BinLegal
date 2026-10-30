@@ -42,6 +42,16 @@ export interface ProcessMilestone {
 }
 
 export interface LegalProcess {
+  officeId?: string; leadId?: string; personId?: string; companyId?: string | null;
+  serviceItemId?: string; budgetVersionId?: string; scope?: string;
+  assignedLawyerIds?: string[];
+  assignmentStatus?: 'pending' | 'assigned';
+  caseControls?: CaseControls;
+  controlsRevision?: number;
+  workRevision?: number;
+  closure?: {summary:string;documentId:string;storagePath:string;storageGeneration:string;actorUid:string;recordedAt:string};
+  startAuthorization?: { requirements: string; evidence: string; exceptionReason: string; actorUid?: string; recordedAt?: string };
+  caseStage?: 'not_started' | 'in_progress' | 'final_review' | 'completed';
   id: string;
   userId: string;
   clientEmail: string;
@@ -110,6 +120,12 @@ export interface LeadBudgetItem {
 }
 
 export interface LeadBudget {
+  taxMode?: 'none' | 'included' | 'added';
+  taxRate?: number;
+  sentAt?: string;
+  sentEvidence?: string;
+  sentByUid?: string;
+  sentByName?: string;
   items: LeadBudgetItem[];
   currency: 'USD' | 'EUR' | 'VES';
   discount?: number;
@@ -130,6 +146,14 @@ export interface LeadDocument {
 }
 
 export interface Lead {
+  commercial?: import('../domain/commercial').CommercialActivity;
+  acceptedBudget?: import('../domain/operations').BudgetAcceptance;
+  officeId?: string;
+  source?: import('../services/leadModel').IntakeSource;
+  personId?: string;
+  companyId?: string | null;
+  revision?: number;
+  followUp?: import('../services/leadModel').LeadFollowUp;
   id: string;
   fullName: string;
   email: string;
@@ -230,6 +254,8 @@ export type WorkflowTaskPriority = 'low' | 'normal' | 'high' | 'urgent';
 export type ReassignmentStatus = 'not_required' | 'pending_approval' | 'approved' | 'rejected';
 
 export interface WorkflowTask {
+  expectedResult?: string; reviewerUid?: string | null; reviewerName?: string | null;
+  requiresReview?: boolean; reviewNote?: string; revision?: number; blockedReason?: string;
   id: string;
   caseId: string;
   clientId: string;
@@ -310,3 +336,10 @@ export interface CaseActivity {
   createdAt: string;
   metadata?: Record<string, string | number | boolean | null>;
 }
+
+export interface CaseControls {
+ requirements: Array<{id:string;title:string;responsible:string;evidence:string}>;
+ hold: {state:'none'|'waiting'|'blocked'|'suspended';reason:string;dependsOn:string;nextAction:string};
+}
+
+export interface WorkNotification {id:string;caseId:string;taskId:string;recipientUid:string;actorUid:string;summary:string;createdAt:string;readAt?:string;}

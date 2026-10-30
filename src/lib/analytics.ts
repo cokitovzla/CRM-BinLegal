@@ -13,6 +13,7 @@ export interface EventProperties {
  * Safely send a custom event to Vercel Analytics and Google Analytics (if present)
  */
 export function trackEvent(eventName: string, properties: EventProperties = {}): void {
+  if(import.meta.env.MODE==='emulators')return;
   try {
     // 1. Send to Vercel Analytics
     track(eventName, properties);

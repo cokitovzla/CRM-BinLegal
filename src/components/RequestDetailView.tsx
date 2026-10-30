@@ -1,3 +1,4 @@
+import { formatCrmDate } from '../lib/dates';
 import React, { useState } from 'react';
 import { 
   ArrowLeft, 
@@ -35,7 +36,19 @@ import type {
   LegalArea 
 } from '../types';
 
+import { CommercialActivityPanel } from './CommercialActivityPanel';
+import type { CommercialActivity } from '../domain/commercial';
+import { BudgetEditor } from './BudgetEditor';
+import {calculateBudget} from '../domain/budget';
+import { AcceptedServicesPanel } from './AcceptedServicesPanel';
+import { LeadFollowUpPanel } from './LeadFollowUpPanel';
+import type { LeadFollowUp } from '../services/leadModel';
+
 interface RequestDetailViewProps {
+  onSaveCommercial: (activity: CommercialActivity, revision: number) => Promise<void>;
+  onAcceptServices: (lead: Lead, ids: string[], evidence: string) => Promise<void>;
+  onSaveBudget: (budget: LeadBudget, revision: number) => Promise<void>;
+  onSaveFollowUp: (followUp: LeadFollowUp, revision: number) => Promise<void>;
   lead: Lead;
   lawyers: string[];
   processes: LegalProcess[];
@@ -82,6 +95,10 @@ const PREDEFINED_SERVICES: Array<{
 
 export const RequestDetailView: React.FC<RequestDetailViewProps> = ({
   lead,
+  onSaveCommercial,
+  onAcceptServices,
+  onSaveBudget,
+  onSaveFollowUp,
   lawyers,
   processes,
   onBack,
@@ -104,8 +121,7 @@ export const RequestDetailView: React.FC<RequestDetailViewProps> = ({
   // Find linked legal process if already created
   const linkedProcess = processes.find(p => 
     p.id === lead.linkedProcessId ||
-    (p.clientEmail && p.clientEmail.toLowerCase() === lead.email.toLowerCase()) ||
-    (lead.company && p.companyName && p.companyName.trim().toLowerCase() === lead.company.trim().toLowerCase())
+    p.leadId === lead.id
   );
 
   // In-line Process Creation State (No modal popup needed!)
@@ -134,40 +150,15 @@ export const RequestDetailView: React.FC<RequestDetailViewProps> = ({
   const [processMilestone, setProcessMilestone] = useState('Revisión inicial y recopilación de recaudos');
 
   // Budget management state
-  const [budgetItems, setBudgetItems] = useState<LeadBudgetItem[]>(() => lead.budget?.items || [
-    {
-      id: 'item-1',
-      concept: `Asesoría inicial en ${lead.areasOfInterest[0] || 'Corporativo'} para ${lead.company || lead.fullName}`,
-      area: lead.areasOfInterest[0] || 'Corporativo',
-      quantity: 1,
-      unitPrice: 350
-    }
-  ]);
+  const [budgetItems, setBudgetItems] = useState<LeadBudgetItem[]>(() => lead.budget?.items || []);
   const [budgetCurrency, setBudgetCurrency] = useState<'USD' | 'EUR' | 'VES'>(() => lead.budget?.currency || 'USD');
   const [budgetDiscount, setBudgetDiscount] = useState<number>(() => lead.budget?.discount || 0);
-  const [budgetNotes, setBudgetNotes] = useState<string>(() => lead.budget?.notes || 'Condición de pago: 50% de anticipo al inicio de gestiones y 50% a la entrega del instrumento formal registrado.');
+  const [budgetNotes, setBudgetNotes] = useState<string>(() => lead.budget?.notes || '');
   const [budgetStatus, setBudgetStatus] = useState<LeadBudget['status']>(() => lead.budget?.status || 'borrador');
   const [catalogSelection, setCatalogSelection] = useState<string>('');
 
   // Document library state
-  const [documents, setDocuments] = useState<LeadDocument[]>(() => lead.documents || [
-    {
-      id: 'doc-init-1',
-      name: `Cédula_Representante_${lead.fullName.replace(/\s+/g, '_')}.pdf`,
-      category: 'Identificación Legal',
-      status: 'aprobado',
-      uploadDate: lead.createdAt.slice(0, 10),
-      size: '1.1 MB'
-    },
-    {
-      id: 'doc-init-2',
-      name: `RIF_Actualizado_${(lead.rif || lead.company).replace(/\s+/g, '_')}.pdf`,
-      category: 'Fiscal',
-      status: 'recibido',
-      uploadDate: lead.createdAt.slice(0, 10),
-      size: '850 KB'
-    }
-  ]);
+  const [documents, setDocuments] = useState<LeadDocument[]>(() => lead.documents || []);
   const [newDocName, setNewDocName] = useState('');
   const [newDocCategory, setNewDocCategory] = useState('Recaudo General');
 
@@ -176,24 +167,8 @@ export const RequestDetailView: React.FC<RequestDetailViewProps> = ({
   const [noteAuthor, setNoteAuthor] = useState(currentLawyer);
 
   // Calculations for budget
-  const subtotal = budgetItems.reduce((acc, item) => acc + (item.quantity * item.unitPrice), 0);
-  const total = Math.max(0, subtotal - (Number(budgetDiscount) || 0));
-
-  // Current stage index in pipeline
-  const currentStageIndex = PIPELINE_STAGES.findIndex(s => s.id === lead.status);
-  const nextStage = currentStageIndex >= 0 && currentStageIndex < PIPELINE_STAGES.length - 1 
-    ? PIPELINE_STAGES[currentStageIndex + 1] 
-    : null;
-
-  const handleStageSelect = (stageId: LeadStatus) => {
-    onUpdateLeadStatus(lead.id, stageId);
-  };
-
-  const handleAdvanceToNext = () => {
-    if (nextStage) {
-      onUpdateLeadStatus(lead.id, nextStage.id);
-    }
-  };
+  const subtotal = (lead.acceptedBudget?.budget.items || lead.budget?.items || budgetItems).reduce((acc, item) => acc + (item.quantity * item.unitPrice), 0);
+  const total = (()=>{try{return calculateBudget(lead.acceptedBudget?.budget||lead.budget||{items:budgetItems,currency:budgetCurrency,discount:budgetDiscount,status:budgetStatus}).total;}catch{return 0;}})();
 
   const handleLawyerChange = (lawyer: string) => {
     onUpdateLeadLawyer(lead.id, lawyer);
@@ -336,7 +311,7 @@ export const RequestDetailView: React.FC<RequestDetailViewProps> = ({
       
       {/* Top Header Navigation */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-2 border-b border-slate-200">
-        <div className="flex items-center gap-3">
+        <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
           <button
             type="button"
             onClick={onBack}
@@ -348,16 +323,16 @@ export const RequestDetailView: React.FC<RequestDetailViewProps> = ({
           
           <span className="hidden sm:inline text-slate-300">/</span>
           
-          <div className="text-xs text-slate-500 font-medium truncate">
+          <div className="min-w-0 break-words text-xs text-slate-500 font-medium">
             <span>Solicitud: </span>
             <strong className="text-slate-900 font-semibold">{lead.company || lead.fullName}</strong>
-            <span className="ml-1.5 font-mono text-slate-400">({lead.id})</span>
+            <span className="ml-1.5 break-all font-mono text-slate-400">({lead.id})</span>
           </div>
         </div>
 
         {/* Quick Assignment Dropdown */}
-        <div className="flex items-center gap-2 self-start sm:self-auto">
-          <span className="text-xs font-semibold text-slate-500 whitespace-nowrap">
+        <div className="flex max-w-full flex-wrap items-center gap-2 self-start sm:self-auto">
+          <span className="text-xs font-semibold text-slate-500">
             Abogado responsable:
           </span>
           <select
@@ -386,7 +361,7 @@ export const RequestDetailView: React.FC<RequestDetailViewProps> = ({
                   Solicitud Comercial
                 </span>
                 <span className="text-[11px] font-medium text-slate-500 bg-slate-100 px-2.5 py-0.5 rounded">
-                  Recibida: {lead.createdAt}
+                  Recibida: {formatCrmDate(lead.createdAt)}
                 </span>
                 {lead.isPrimaryContact && (
                   <span className="text-[10px] font-semibold text-amber-800 bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
@@ -434,83 +409,24 @@ export const RequestDetailView: React.FC<RequestDetailViewProps> = ({
                 className="inline-flex items-center gap-2 bg-emerald-700 hover:bg-emerald-800 text-white px-4 py-2.5 rounded-xl text-xs font-bold shadow-xs transition-colors cursor-pointer"
               >
                 <FolderKanban className="w-4 h-4" />
-                <span>Expediente Activo ({linkedProcess.progress}%)</span>
+                <span>Abrir trámite ({linkedProcess.progress}%)</span>
               </button>
             ) : (
               <button
                 type="button"
-                onClick={() => setShowProcessForm(true)}
+                onClick={() => setActiveTab('budget')}
                 className="inline-flex items-center gap-2 bg-[#0071ce] hover:bg-[#005ba7] text-white px-4 py-2.5 rounded-xl text-xs font-bold shadow-xs transition-colors cursor-pointer"
               >
                 <Workflow className="w-4 h-4" />
-                <span>Aperturar Expediente</span>
+                <span>Revisar presupuesto y aceptación</span>
               </button>
             )}
           </div>
         </div>
 
-        {/* INTERACTIVE TRELLO-STYLE PIPELINE FLOWCHART */}
-        <div className="pt-4 border-t border-slate-100">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-bold uppercase tracking-wider text-slate-600">
-              Flujograma de la Solicitud (Haz clic en una etapa para moverla)
-            </span>
-            {nextStage && (
-              <button
-                type="button"
-                onClick={handleAdvanceToNext}
-                className="text-xs font-bold text-[#0071ce] hover:underline inline-flex items-center gap-1 cursor-pointer"
-              >
-                <span>Avanzar a: {nextStage.label}</span>
-                <ChevronRight className="w-3.5 h-3.5" />
-              </button>
-            )}
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-2">
-            {PIPELINE_STAGES.map((st, idx) => {
-              const isCurrent = lead.status === st.id;
-              const isPassed = currentStageIndex > idx;
-
-              let cardStyles = 'bg-slate-50 border-slate-200 text-slate-600 hover:border-slate-300';
-              if (isCurrent) {
-                cardStyles = 'bg-[#0071ce] text-white border-[#0071ce] shadow-sm ring-2 ring-blue-200';
-              } else if (isPassed) {
-                cardStyles = 'bg-emerald-50 border-emerald-200 text-emerald-800 hover:bg-emerald-100/70';
-              }
-
-              return (
-                <button
-                  key={st.id}
-                  type="button"
-                  onClick={() => handleStageSelect(st.id)}
-                  className={`text-left p-3 rounded-xl border transition-all cursor-pointer ${cardStyles}`}
-                >
-                  <div className="flex items-center justify-between mb-1">
-                    <span className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded ${
-                      isCurrent ? 'bg-white/20 text-white' : isPassed ? 'bg-emerald-200/60 text-emerald-900' : 'bg-slate-200 text-slate-700'
-                    }`}>
-                      Paso {st.stepNumber}
-                    </span>
-                    {isPassed && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-700" />}
-                    {isCurrent && <Clock className="w-3.5 h-3.5 text-white animate-pulse" />}
-                  </div>
-
-                  <div className="text-xs font-bold leading-snug">
-                    {st.label}
-                  </div>
-
-                  <div className={`mt-0.5 text-[10px] truncate ${
-                    isCurrent ? 'text-blue-100' : 'text-slate-400'
-                  }`}>
-                    {st.shortDesc}
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-        </div>
       </div>
+
+      <CommercialActivityPanel lead={lead} onSave={onSaveCommercial} />
 
       {/* IN-LINE PROCESS APERTURE PANEL (Direct on screen when toggled, no popup modal!) */}
       {showProcessForm && !linkedProcess && (
@@ -634,7 +550,7 @@ export const RequestDetailView: React.FC<RequestDetailViewProps> = ({
           <span className={`text-[10px] px-1.5 py-0.2 rounded font-mono ${
             budgetStatus === 'aprobado' ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-200 text-slate-700'
           }`}>
-            {budgetStatus}
+            {lead.budget?.status || budgetStatus}
           </span>
         </button>
         <button
@@ -658,6 +574,8 @@ export const RequestDetailView: React.FC<RequestDetailViewProps> = ({
         </button>
       </div>
 
+      {(activeTab === 'summary' || activeTab === 'budget') && <AcceptedServicesPanel lead={lead} processes={processes} onAccept={onAcceptServices} onOpen={onOpenProcess} />}
+      {activeTab === 'summary' && <LeadFollowUpPanel key={lead.id} lead={lead} onSave={onSaveFollowUp} />}
       {/* TAB 1: SUMMARY & DIAGNOSTIC */}
       {activeTab === 'summary' && (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
@@ -669,7 +587,7 @@ export const RequestDetailView: React.FC<RequestDetailViewProps> = ({
                 Planteamiento del Negocio y Necesidad
               </h2>
               <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 text-xs text-slate-700 leading-relaxed font-normal">
-                {lead.notes || 'El cliente completó el formulario indicando interés en blindaje societario y contratos marco.'}
+                {lead.notes || 'Sin descripción adicional registrada.'}
               </div>
 
               {/* Areas of interest */}
@@ -702,7 +620,7 @@ export const RequestDetailView: React.FC<RequestDetailViewProps> = ({
                 <span className={`text-xs font-mono font-bold px-2.5 py-1 rounded-lg ${
                   lead.calculatedRiskScore >= 70 ? 'bg-red-50 text-red-700 border border-red-200' : 'bg-amber-50 text-amber-700 border border-amber-200'
                 }`}>
-                  Riesgo: {lead.calculatedRiskScore} / 100
+                  {lead.source === 'manual' || lead.source === 'contact' ? 'Evaluación pendiente' : 'Resultado orientativo: ' + lead.calculatedRiskScore + ' / 100'}
                 </span>
               </div>
 
@@ -742,7 +660,7 @@ export const RequestDetailView: React.FC<RequestDetailViewProps> = ({
               <h2 className="text-lg font-extrabold text-[#0b192c]">
                 {lead.company || 'Particular'}
               </h2>
-              {lead.company && onOpenCompany && (
+              {lead.company && lead.company !== 'Consulta particular' && onOpenCompany && (
                 <button
                   type="button"
                   onClick={() => onOpenCompany(lead.company)}
@@ -804,13 +722,13 @@ export const RequestDetailView: React.FC<RequestDetailViewProps> = ({
                 </div>
               ) : (
                 <div className="text-xs text-slate-500 space-y-2">
-                  <p>Esta solicitud aún no tiene expediente operativo formalizado.</p>
+                  <p>Esta solicitud aún no tiene un trámite abierto. Cada servicio aceptado abrirá el suyo.</p>
                   <button
                     type="button"
-                    onClick={() => setShowProcessForm(true)}
+                    onClick={() => setActiveTab('budget')}
                     className="w-full py-2 bg-[#0071ce] hover:bg-[#005ba7] text-white rounded-lg font-bold text-center transition-colors cursor-pointer"
                   >
-                    Aperturar Expediente Ahora
+                    Revisar propuesta y aceptación
                   </button>
                 </div>
               )}
@@ -819,188 +737,7 @@ export const RequestDetailView: React.FC<RequestDetailViewProps> = ({
         </div>
       )}
 
-      {/* TAB 2: INTEGRATED BUDGET & PROPOSAL TOOL (Sección 7 del Plan Maestro) */}
-      {activeTab === 'budget' && (
-        <div className="bg-white rounded-2xl border border-slate-200 p-5 sm:p-7 shadow-xs space-y-6">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-200">
-            <div>
-              <span className="text-[10px] font-bold uppercase tracking-wider text-[#0071ce]">
-                Herramienta de Presupuestos BinLegal
-              </span>
-              <h2 className="text-lg font-bold text-[#0b192c]">
-                Cotización de Honorarios y Servicios para {lead.company || lead.fullName}
-              </h2>
-              <p className="text-xs text-slate-500">
-                Diseña y aprueba honorarios comerciales vinculados directamente a la solicitud.
-              </p>
-            </div>
-
-            {/* Proposal status selector */}
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-semibold text-slate-600">Estatus:</span>
-              <select
-                value={budgetStatus}
-                onChange={(e) => handleBudgetStatusChange(e.target.value as LeadBudget['status'])}
-                className={`border rounded-lg px-3 py-1.5 text-xs font-bold focus:outline-none ${
-                  budgetStatus === 'aprobado' 
-                    ? 'bg-emerald-50 text-emerald-800 border-emerald-300' 
-                    : budgetStatus === 'enviado' 
-                    ? 'bg-blue-50 text-[#0071ce] border-blue-300' 
-                    : 'bg-slate-50 text-slate-700 border-slate-300'
-                }`}
-              >
-                <option value="borrador">Borrador Interno</option>
-                <option value="enviado">Enviado al Cliente</option>
-                <option value="aprobado">Aprobado por el Cliente</option>
-                <option value="rechazado">Declinado</option>
-              </select>
-            </div>
-          </div>
-
-          {/* Quick Service Catalog Adder */}
-          <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-3">
-            <span className="text-xs font-bold text-slate-700 block">
-              Agregar Servicio desde el Catálogo Oficial de BinLegal:
-            </span>
-            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
-              <select
-                value={catalogSelection}
-                onChange={(e) => setCatalogSelection(e.target.value)}
-                className="flex-1 bg-white border border-slate-300 rounded-lg px-3 py-2 text-xs text-slate-800 focus:outline-none"
-              >
-                <option value="">-- Seleccionar concepto o trámite --</option>
-                {PREDEFINED_SERVICES.map((srv, i) => (
-                  <option key={i} value={srv.concept}>
-                    {srv.concept} ({srv.area} · Ref: ${srv.suggestedPrice} USD)
-                  </option>
-                ))}
-              </select>
-              <button
-                type="button"
-                onClick={handleAddBudgetItem}
-                disabled={!catalogSelection}
-                className="inline-flex items-center justify-center gap-1.5 bg-[#0071ce] hover:bg-[#005ba7] disabled:opacity-40 text-white px-4 py-2 rounded-lg text-xs font-bold transition-colors cursor-pointer"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                <span>Agregar Concepto</span>
-              </button>
-            </div>
-          </div>
-
-          {/* Items Table */}
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs border-collapse">
-              <thead>
-                <tr className="border-b border-slate-200 text-slate-500 font-semibold uppercase tracking-wider text-[10px]">
-                  <th className="py-2.5 px-3">Concepto Jurídico</th>
-                  <th className="py-2.5 px-3">Materia</th>
-                  <th className="py-2.5 px-3 text-center">Cant.</th>
-                  <th className="py-2.5 px-3 text-right">Tarifa Unit. ($)</th>
-                  <th className="py-2.5 px-3 text-right">Subtotal</th>
-                  <th className="py-2.5 px-3 text-center">Acción</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {budgetItems.map((item) => (
-                  <tr key={item.id} className="hover:bg-slate-50/70">
-                    <td className="py-3 px-3 font-semibold text-slate-900 max-w-md">
-                      {item.concept}
-                    </td>
-                    <td className="py-3 px-3">
-                      <span className="text-[10px] bg-slate-100 px-2 py-0.5 rounded text-slate-700 font-medium">
-                        {item.area}
-                      </span>
-                    </td>
-                    <td className="py-3 px-3 text-center font-mono">
-                      {item.quantity}
-                    </td>
-                    <td className="py-3 px-3 text-right font-mono tabular-nums">
-                      ${item.unitPrice} {budgetCurrency}
-                    </td>
-                    <td className="py-3 px-3 text-right font-mono font-bold text-slate-900 tabular-nums">
-                      ${item.quantity * item.unitPrice} {budgetCurrency}
-                    </td>
-                    <td className="py-3 px-3 text-center">
-                      <button
-                        type="button"
-                        onClick={() => handleRemoveBudgetItem(item.id)}
-                        className="p-1 text-slate-400 hover:text-red-600 rounded transition-colors"
-                        title="Eliminar concepto"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-                {budgetItems.length === 0 && (
-                  <tr>
-                    <td colSpan={6} className="py-6 text-center text-slate-400 italic">
-                      No hay conceptos en el presupuesto. Selecciona un servicio arriba para agregar.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-
-          {/* Budget Summary & Conditions */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-4 border-t border-slate-200">
-            <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1">
-                Condiciones Comerciales y Observaciones
-              </label>
-              <textarea
-                value={budgetNotes}
-                onChange={(e) => {
-                  setBudgetNotes(e.target.value);
-                  saveBudget(budgetItems, budgetDiscount, e.target.value, budgetStatus);
-                }}
-                rows={3}
-                className="w-full bg-slate-50 border border-slate-300 rounded-lg p-3 text-xs text-slate-800 focus:outline-none focus:bg-white"
-                placeholder="Indica vigencia, forma de pago (50/50), gastos arancelarios, etc."
-              />
-            </div>
-
-            <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-2.5 text-xs">
-              <div className="flex justify-between text-slate-600">
-                <span>Subtotal honorarios:</span>
-                <span className="font-mono font-semibold">${subtotal} {budgetCurrency}</span>
-              </div>
-              <div className="flex items-center justify-between text-slate-600">
-                <span>Descuento acordado ($):</span>
-                <input
-                  type="number"
-                  min="0"
-                  value={budgetDiscount}
-                  onChange={(e) => {
-                    const d = Number(e.target.value) || 0;
-                    setBudgetDiscount(d);
-                    saveBudget(budgetItems, d, budgetNotes, budgetStatus);
-                  }}
-                  className="w-24 text-right bg-white border border-slate-300 rounded px-2 py-0.5 text-xs font-mono"
-                />
-              </div>
-              <div className="pt-2 border-t border-slate-200 flex justify-between text-base font-extrabold text-[#0b192c]">
-                <span>Total Presupuestado:</span>
-                <span className="font-mono text-[#0071ce]">${total} {budgetCurrency}</span>
-              </div>
-              
-              {/* Direct action if approved */}
-              {budgetStatus === 'aprobado' && !linkedProcess && (
-                <div className="pt-2">
-                  <button
-                    type="button"
-                    onClick={() => setShowProcessForm(true)}
-                    className="w-full py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg font-bold text-center text-xs transition-colors cursor-pointer"
-                  >
-                    Aprobar y Formalizar Expediente Legal
-                  </button>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+      {activeTab === 'budget' && <BudgetEditor key={lead.id} lead={lead} onSave={onSaveBudget} />}
 
       {/* TAB 3: DOCUMENT & RECAUDOS LIBRARY (Sección 4.3 del Plan Maestro) */}
       {activeTab === 'documents' && (

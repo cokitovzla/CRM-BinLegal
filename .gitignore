@@ -7,3 +7,15 @@ coverage/
 .env*
 !.env.example
 .aistudio/
+
+.local-tools/
+.firebase/
+emulator-data/
+
+# Private credentials and keys
+*.pem
+*.key
+*.p12
+*.pfx
+*service-account*.json
+*credentials*.json

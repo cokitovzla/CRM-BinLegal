@@ -7,7 +7,7 @@ export const BINLEGAL_SERVICES: ServiceDetail[] = [
     title: 'Corporativo',
     subtitle: 'Estructura societaria diseñada para escalar con seguridad',
     shortDescription: 'Diseñamos la arquitectura societaria, pactos de socios y esquemas de vesting para que tu empresa crezca sin fricciones entre fundadores ni contingencias fiscales.',
-    fullDescription: 'El 86% de las disputas que destruyen PYMES nacen de vacíos en las reglas societarias iniciales. En BinLegal estructuramos la figura jurídica precisa (C.A., S.A.S., LLC o holding) adaptada a tu modelo de negocio, redactando estatutos personalizados, pactos de socios (shareholders agreements) y cláusulas de salida que blindan la continuidad operativa.',
+    fullDescription: 'El 86% de las disputas que destruyen PYMES nacen de vacíos en las reglas societarias iniciales. En JurisNova estructuramos la figura jurídica precisa (C.A., S.A.S., LLC o holding) adaptada a tu modelo de negocio, redactando estatutos personalizados, pactos de socios (shareholders agreements) y cláusulas de salida que blindan la continuidad operativa.',
     keyDeliverables: [
       'Constitución o reestructuración societaria a medida',
       'Pacto de socios (Drag-along, Tag-along, cláusulas anti-bloqueo)',
@@ -91,7 +91,7 @@ export const BINLEGAL_SERVICES: ServiceDetail[] = [
     title: 'Negociación y mediación',
     subtitle: 'Resolvemos conflictos antes de que lleguen al litigio',
     shortDescription: 'Métodos alternativos de resolución de controversias comerciales. Salvaguardamos tus relaciones estratégicas de negocios con soluciones pacíficas y eficaces.',
-    fullDescription: 'Un juicio comercial promedio cuesta hasta un 40% del monto en disputa y tarda años. En BinLegal somos especialistas en mediación pragmática: sentamos a las partes en la mesa, identificamos el interés común y redactamos transacciones extrajudiciales con fuerza de cosa juzgada.',
+    fullDescription: 'Un juicio comercial promedio cuesta hasta un 40% del monto en disputa y tarda años. En JurisNova somos especialistas en mediación pragmática: sentamos a las partes en la mesa, identificamos el interés común y redactamos transacciones extrajudiciales con fuerza de cosa juzgada.',
     keyDeliverables: [
       'Estrategias de negociación preventiva para renegociación de contratos',
       'Mediación privada entre socios o con proveedores estratégicos',
@@ -132,12 +132,12 @@ export const BINLEGAL_SERVICES: ServiceDetail[] = [
 export const BINLEGAL_TEAM: TeamMember[] = [
   {
     id: 'jose-rafael-vasquez',
-    name: 'José Rafael Vásquez',
+    name: 'Elena Marín',
     role: 'Fundador & Director General',
-    bio: 'Abogado especialista en derecho corporativo y estrategia para PYMES. Fundó BinLegal con la convicción de que la ley debe ser una catapulta de crecimiento y no un laberinto burocrático para los emprendedores.',
+    bio: 'Abogado especialista en derecho corporativo y estrategia para PYMES. Fundó JurisNova con la convicción de que la ley debe ser una catapulta de crecimiento y no un laberinto burocrático para los emprendedores.',
     specialty: 'Estrategia legal, estructuración de negocios y venture scaling',
     experience: '+12 años de trayectoria asesorando ecosistemas de negocios',
-    email: 'jvasquez@binlegal.com',
+    email: 'jvasquez@example.test',
     photoUrl: 'https://images.unsplash.com/photo-1560250097-0b93528c311a?auto=format&fit=crop&w=400&h=400&q=80'
   },
   {
@@ -147,7 +147,7 @@ export const BINLEGAL_TEAM: TeamMember[] = [
     bio: 'Especialista en derecho societario, fusiones, reestructuraciones y pactos de socios. Ha estructurado más de 120 sociedades mercantiles y rondas de financiamiento temprano.',
     specialty: 'Arquitectura societaria, pactos de socios y gobierno corporativo',
     experience: '+9 años de experiencia en firmas corporativas',
-    email: 'mfernandez@binlegal.com',
+    email: 'mfernandez@example.test',
     photoUrl: 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?auto=format&fit=crop&w=400&h=400&q=80'
   },
   {
@@ -157,7 +157,7 @@ export const BINLEGAL_TEAM: TeamMember[] = [
     bio: 'Especialista en estructuración legal preventiva y mediación comercial. Enfocado en dotar a las empresas de herramientas sólidas para superar la temida barrera de los 3.5 años.',
     specialty: 'Estrategia preventiva, contratos complejos y arbitraje',
     experience: '+10 años acompañando empresas en expansión',
-    email: 'rsalas@binlegal.com',
+    email: 'rsalas@example.test',
     photoUrl: 'https://images.unsplash.com/photo-1519085360753-af0119f7cbe7?auto=format&fit=crop&w=400&h=400&q=80'
   },
   {
@@ -167,7 +167,7 @@ export const BINLEGAL_TEAM: TeamMember[] = [
     bio: 'Experto en compliance normativo, permisos sectoriales y regulación comercial y aduanera. Asesora a industrias alimentarias, fintech, retail y manufactura.',
     specialty: 'Derecho administrativo, licencias comerciales y permisología',
     experience: '+8 años en consultoría regulatoria y de compliance',
-    email: 'cbermudez@binlegal.com',
+    email: 'cbermudez@example.test',
     photoUrl: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=400&h=400&q=80'
   },
   {
@@ -177,7 +177,7 @@ export const BINLEGAL_TEAM: TeamMember[] = [
     bio: 'Focalizada en protección de marcas, patentes, software y secretos empresariales. Ha liderado más de 300 solicitudes de signos distintivos y defensas ante oposiciones.',
     specialty: 'Marcas, patentes, derechos de autor en entornos digitales y software',
     experience: '+6 años en propiedad industrial e intelectual',
-    email: 'arivas@binlegal.com',
+    email: 'arivas@example.test',
     photoUrl: 'https://images.unsplash.com/photo-1580489944761-15a19d654956?auto=format&fit=crop&w=400&h=400&q=80'
   }
 ];
@@ -196,8 +196,8 @@ export const BINLEGAL_BLOG: BlogPost[] = [
       'Cláusulas esenciales que debe tener toda PYME:',
       '1. Esquema de Vesting: Las acciones de los fundadores deben consolidarse mes a mes a lo largo de un período (usualmente 3 o 4 años con un año de "cliff"). Si alguien renuncia al mes 5, no se lleva la mitad de la empresa.',
       '2. Cláusulas de Arrastre y Acompañamiento (Drag-along y Tag-along): Si surge una oferta para comprar el 100% de la empresa, los socios minoritarios no pueden sabotear la venta, ni los mayoritarios pueden vender a sus espaldas sin incluirlos.',
-      '3. Resolución de Deadlocks: Mecanismos rápidos (ruleta rusa, mediación privada de BinLegal) para desenredar un empate 50/50 antes de que el banco congele las cuentas por falta de firma.',
-      'En BinLegal redactamos este acuerdo a la medida del ADN de tu equipo, permitiéndoles concentrarse en vender y crecer.'
+      '3. Resolución de Deadlocks: Mecanismos rápidos (ruleta rusa, mediación privada de JurisNova) para desenredar un empate 50/50 antes de que el banco congele las cuentas por falta de firma.',
+      'En JurisNova redactamos este acuerdo a la medida del ADN de tu equipo, permitiéndoles concentrarse en vender y crecer.'
     ],
     author: 'María Fernández'
   },
@@ -212,7 +212,7 @@ export const BINLEGAL_BLOG: BlogPost[] = [
       'Un error recurrente entre los emprendedores es creer que tener el dominio web y la cuenta de Instagram equivale a tener la propiedad legal de la marca. Nada más alejado de la realidad.',
       'En la legislación comercial rige el principio "primero en el tiempo, primero en el derecho" (First to file). Si un competidor o un tercero de mala fe detecta que tu marca tiene tracción y la solicita formalmente ante el organismo registral, tú serás quien reciba una notificación judicial de cese de uso.',
       'El costo de un rebranding forzado incluye: pérdida de posicionamiento SEO, cambio de empaques, rediseño de logos, desconfianza de clientes y potenciales indemnizaciones por daños.',
-      'En BinLegal realizamos la búsqueda fonética previa sin costo para clientes del diagnóstico legal, evaluando si el nombre está despejado antes de que inviertas un solo dólar en publicidad.'
+      'En JurisNova realizamos la búsqueda fonética previa sin costo para clientes del diagnóstico legal, evaluando si el nombre está despejado antes de que inviertas un solo dólar en publicidad.'
     ],
     author: 'Ana Rivas'
   },
@@ -229,7 +229,7 @@ export const BINLEGAL_BLOG: BlogPost[] = [
       'Una estructura legal profesional actúa como el chasis de un vehículo de carreras. Permite acelerar a fondo sin que el automóvil se desarme en la primera curva cerrada.',
       'Implementar desde el día uno: contratos de prestación de servicios claros, libros mercantiles al día y separación patrimonial estricta entre el dinero personal del fundador y el capital de la empresa.'
     ],
-    author: 'José Rafael Vásquez'
+    author: 'Elena Marín'
   }
 ];
 
@@ -299,15 +299,15 @@ export const INITIAL_FORUM_POSTS: ForumPost[] = [
     company: 'Kora Logistics',
     category: 'Rondas de Inversión',
     title: '¿Qué figuras usaron para su primera ronda pre-seed? (SAFE vs Nota Convertible)',
-    content: 'Hola comunidad BinLegal. Estamos preparando nuestra primera ronda con ángeles locales y de la diáspora. ¿Cómo estructuraron con José Rafael Vásquez y el equipo el acuerdo para no complicar el cap table de entrada? Agradezco experiencias de otros fundadores del ecosistema.',
+    content: 'Hola comunidad JurisNova. Estamos preparando nuestra primera ronda con ángeles locales y de la diáspora. ¿Cómo estructuraron con Elena Marín y el equipo el acuerdo para no complicar el cap table de entrada? Agradezco experiencias de otros fundadores del ecosistema.',
     createdAt: 'Ayer, 16:30',
     likes: 12,
     replies: [
       {
         id: 'fpr-1',
-        author: 'José Rafael Vásquez',
-        role: 'Director BinLegal',
-        company: 'BinLegal',
+        author: 'Elena Marín',
+        role: 'Director JurisNova',
+        company: 'JurisNova',
         content: 'Excelente pregunta Gabriel. Con PYMES y startups de base tecnológica recomendamos un SAFE adaptado con Side Letter de jurisdicción aplicable. Evita fijar una valoración prematura y no genera pasivo financiero inmediato como la nota de deuda. En nuestra sesión del jueves revisaremos los términos clave.',
         createdAt: 'Ayer, 18:10'
       },
@@ -316,7 +316,7 @@ export const INITIAL_FORUM_POSTS: ForumPost[] = [
         author: 'Daniela Machado',
         role: 'Founder',
         company: 'NexPay B2B',
-        content: 'Totalmente de acuerdo con José Rafael. Nosotros usamos el modelo que nos diseñó María Fernández en BinLegal y los inversionistas internacionales lo firmaron sin objeciones.',
+        content: 'Totalmente de acuerdo con José Rafael. Nosotros usamos el modelo que nos diseñó María Fernández en JurisNova y los inversionistas internacionales lo firmaron sin objeciones.',
         createdAt: 'Hoy, 09:15'
       }
     ]
@@ -337,7 +337,7 @@ export const INITIAL_FORUM_POSTS: ForumPost[] = [
         author: 'Valentina Pardo',
         role: 'Directora',
         company: 'AgroData Vzla',
-        content: '¡Gran hito Andrés! Nosotros estamos terminando la protección de nuestro software de telemetría también con BinLegal. Clave para generar valor real de empresa.',
+        content: '¡Gran hito Andrés! Nosotros estamos terminando la protección de nuestro software de telemetría también con JurisNova. Clave para generar valor real de empresa.',
         createdAt: 'Hace 2 días'
       }
     ]
@@ -357,7 +357,7 @@ export const INITIAL_FORUM_POSTS: ForumPost[] = [
         id: 'fpr-4',
         author: 'Ricardo Salas',
         role: 'Socio Fundador',
-        company: 'BinLegal',
+        company: 'JurisNova',
         content: 'Fundamental aporte, Dra. Elena. Es el motivo número uno de contingencias en due diligence. Todo código pagado debe tener respaldo legal de titularidad.',
         createdAt: 'Hace 4 días'
       }
@@ -409,12 +409,12 @@ export const INITIAL_LEADS: Lead[] = [
     internalNotes: [
       {
         id: 'note-1',
-        author: 'José Rafael Vásquez',
+        author: 'Elena Marín',
         text: 'Prospecto con excelente volumen de pedidos semanales. Requieren propuesta rápida para que no firmen contratos genéricos de internet.',
         timestamp: '2026-10-20 09:40'
       }
     ],
-    assignedLawyer: 'José Rafael Vásquez',
+    assignedLawyer: 'Elena Marín',
     documents: [
       {
         id: 'doc-1',
@@ -494,12 +494,12 @@ export const INITIAL_LEADS: Lead[] = [
     internalNotes: [
       {
         id: 'note-7-1',
-        author: 'José Rafael Vásquez',
+        author: 'Elena Marín',
         text: 'Contacto administrativo añadido para enlace de recaudos societarios y revisión de pólizas.',
         timestamp: '2026-10-21 11:45'
       }
     ],
-    assignedLawyer: 'José Rafael Vásquez'
+    assignedLawyer: 'Elena Marín'
   },
   {
     id: 'lead-2',
@@ -593,7 +593,7 @@ export const INITIAL_LEADS: Lead[] = [
         level: 'Medio',
         title: 'Disputa de cumplimiento de contrato B2B',
         description: 'Riesgo de prescripción o litigio de 2 años en tribunales con pérdida de liquidez.',
-        actionRequired: 'Mesa de mediación estratégica conducida por BinLegal con acuerdo transaccional notariado.'
+        actionRequired: 'Mesa de mediación estratégica conducida por JurisNova con acuerdo transaccional notariado.'
       }
     ],
     internalNotes: [
@@ -634,7 +634,7 @@ export const INITIAL_LEADS: Lead[] = [
     internalNotes: [
       {
         id: 'note-4',
-        author: 'José Rafael Vásquez',
+        author: 'Elena Marín',
         text: 'Presentamos propuesta de acompañamiento integral "Arranque Seguro PYME". Muy receptivas, esperando aprobación de presupuesto.',
         timestamp: '2026-10-18 10:15'
       }
@@ -669,7 +669,7 @@ export const INITIAL_LEADS: Lead[] = [
     internalNotes: [
       {
         id: 'note-5',
-        author: 'José Rafael Vásquez',
+        author: 'Elena Marín',
         text: 'Contrato firmado. Iniciamos trabajo con María Fernández y Ana Rivas. Cliente formalizado en el paquete mensual de asesoría integral.',
         timestamp: '2026-10-16 12:00'
       }

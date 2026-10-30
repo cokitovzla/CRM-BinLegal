@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { BusinessStage, LegalArea, Lead, RiskItem } from '../types';
 import { calculateDiagnosisRisk } from '../data/initialData';
 import { SectorSelector } from './SectorSelector';
@@ -27,7 +27,7 @@ import {
 import { trackDiagnosticStart, trackDiagnosticComplete, trackClick } from '../lib/analytics';
 
 interface DiagnosticSectionProps {
-  onNewLeadCreated: (lead: Lead) => Promise<boolean> | void;
+  onNewLeadCreated: (lead: Lead) => Promise<boolean>;
   preselectedArea?: LegalArea | null;
 }
 
@@ -134,6 +134,7 @@ export const DiagnosticSection: React.FC<DiagnosticSectionProps> = ({
   preselectedArea
 }) => {
   // NONE preselected by default as requested by user
+  const pendingSubmission = useRef<{ signature: string; lead: Lead } | null>(null);
   const [stage, setStage] = useState<BusinessStage | null>(null);
   const [selectedAreas, setSelectedAreas] = useState<LegalArea[]>(preselectedArea ? [preselectedArea] : []);
   const [selectedSectors, setSelectedSectors] = useState<string[]>([]);
@@ -245,7 +246,7 @@ export const DiagnosticSection: React.FC<DiagnosticSectionProps> = ({
     const calculation = calculateDiagnosisRisk(stage, selectedAreas, company, formattedIndustry);
 
     // 3. Assemble complete Lead entity with all fields collected by the public form
-    const leadId = `lead-${Date.now()}`;
+    const leadId = crypto.randomUUID();
     const newLead: Lead = {
       id: leadId,
       fullName: fullName.trim(),
@@ -257,7 +258,7 @@ export const DiagnosticSection: React.FC<DiagnosticSectionProps> = ({
       areasOfInterest: [...selectedAreas], // Preserves ALL selected legal areas in a single request
       notes: situation.trim() || undefined,
       status: 'nuevo_lead',
-      createdAt: new Date().toISOString().replace('T', ' ').slice(0, 16),
+      createdAt: new Date().toISOString(),
       calculatedRiskScore: calculation.score,
       riskSummary: calculation.summary,
       riskItems: calculation.items,
@@ -273,7 +274,10 @@ export const DiagnosticSection: React.FC<DiagnosticSectionProps> = ({
 
     try {
       // 4. Persist to CRM and Firestore through existing integration flow
-      await onNewLeadCreated(newLead);
+      const signature = JSON.stringify([newLead.fullName, newLead.email, newLead.phone, newLead.company, newLead.industry, newLead.stage, newLead.areasOfInterest, newLead.notes]);
+      if (pendingSubmission.current?.signature !== signature) pendingSubmission.current = { signature, lead: newLead };
+      if (!await onNewLeadCreated(pendingSubmission.current.lead)) throw new Error('No se confirmó el guardado.');
+      pendingSubmission.current = null;
 
       trackDiagnosticComplete(formattedIndustry, calculation.score, calculation.items.length);
       setDiagnosisResult({

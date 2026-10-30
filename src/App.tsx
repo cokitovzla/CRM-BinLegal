@@ -4,6 +4,7 @@ import { SpeedInsights } from '@vercel/speed-insights/react';
 import { initGlobalClickTracking, trackNavigation, trackAuthAction } from './lib/analytics';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { Navbar } from './components/Navbar';
+import { DemoLanding } from './components/DemoLanding';
 import { HeroSection } from './components/HeroSection';
 import { ServicesSection } from './components/ServicesSection';
 import { WhySection } from './components/WhySection';
@@ -23,7 +24,7 @@ import { FloatingAssistant } from './components/FloatingAssistant';
 import { LegalInfoModal, LegalTab } from './components/LegalInfoModal';
 import { X } from 'lucide-react';
 import { doc, setDoc, updateDoc, collection, onSnapshot, arrayUnion } from 'firebase/firestore';
-import { db } from './lib/firebase';
+import { db, usingFirebaseEmulators, usingFirebaseStaging } from './lib/firebase';
 
 import { 
   Lead, 
@@ -40,14 +41,20 @@ import {
   INITIAL_FORUM_POSTS 
 } from './data/initialData';
 import { processService } from './services/processService';
+import { commercialStatus, validateCommercial, validateBudgetDispatch, type CommercialActivity } from './domain/commercial';
+import { operationsService } from './services/operationsService';
+import type { LeadBudget } from './types';
+import { leadService } from './services/leadService';
+import { publicIntake, cleanLead, validateFollowUp, type LeadFollowUp } from './services/leadModel';
 import { INITIAL_PREVIEW_PROCESSES } from './data/previewProcesses';
 
 function MainAppContent() {
   const { currentUser, userProfile, isAdmin, loading: authLoading } = useAuth();
+  const canUseWorkspace = isAdmin || ['lawyer','supervisor','intern','secretary'].includes(userProfile?.role || '');
   const isCrmPreview = window.location.pathname.replace(/\/$/, '') === '/crm-preview';
   const [previewLeads, setPreviewLeads] = useState<Lead[]>(() => {
     try {
-      const saved = localStorage.getItem('binlegal_crm_preview_leads_v1');
+      const saved = localStorage.getItem('jurisnova_omega_preview_leads_v1');
       if (!saved) return INITIAL_LEADS;
       const existing = JSON.parse(saved) as Lead[];
       const knownIds = new Set(existing.map(lead => lead.id));
@@ -59,10 +66,10 @@ function MainAppContent() {
   const getRouteState = (pathname: string) => {
     const cleanPath = pathname.replace(/\/$/, '') || '/';
     const routes: Record<string, { view: 'landing' | 'admin' | 'ecosystem' | 'portal'; section: string }> = {
-      '/': { view: 'admin', section: 'admin' },
+      '/': { view: 'landing', section: 'inicio' },
       '/crm': { view: 'admin', section: 'admin' },
       '/crm-preview': { view: 'admin', section: 'admin' },
-      '/diagnostico': { view: 'admin', section: 'diagnostico' },
+      '/diagnostico': { view: 'landing', section: 'diagnostico' },
       '/landing': { view: 'landing', section: 'inicio' },
       '/servicios': { view: 'landing', section: 'que-hacemos' },
       '/por-que': { view: 'landing', section: 'por-que' },
@@ -72,16 +79,17 @@ function MainAppContent() {
       '/contacto': { view: 'landing', section: 'contacto' },
       '/portal': { view: 'portal', section: 'portal' },
     };
-    return routes[cleanPath] || { view: 'admin' as const, section: 'admin' };
+    return routes[cleanPath] || { view: 'landing' as const, section: 'inicio' };
   };
 
+  const [, refreshLocation] = useState(0);
   const initialRoute = getRouteState(window.location.pathname);
   const [currentView, setCurrentView] = useState<'landing' | 'admin' | 'ecosystem' | 'portal'>(initialRoute.view);
   const [activeSection, setActiveSection] = useState<string>(initialRoute.section);
   const [preselectedArea, setPreselectedArea] = useState<LegalArea | null>(null);
   const [notification, setNotification] = useState<string | null>(null);
   const [showDiagnosticModal, setShowDiagnosticModal] = useState<boolean>(
-    () => window.location.pathname.replace(/\/$/, '') === '/diagnostico'
+    () => false
   );
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [authModalMode, setAuthModalMode] = useState<'login' | 'register' | 'newsletter'>('login');
@@ -106,22 +114,13 @@ function MainAppContent() {
     setIsAuthModalOpen(true);
   };
 
-  // Persistent Leads State (CRM & Diagnóstico)
-  const [leads, setLeads] = useState<Lead[]>(() => {
-    try {
-      const saved = localStorage.getItem('binlegal_leads_v1');
-      if (saved) return JSON.parse(saved);
-    } catch (e) {
-      console.error(e);
-    }
-    return INITIAL_LEADS;
-  });
-
+  const [leads, setLeads] = useState<Lead[]>([]);
+  const [leadLoadError, setLeadLoadError] = useState('');
   // Persistent Processes State (Syncing with Firestore & fallback memory)
   const [processes, setProcesses] = useState<LegalProcess[]>(isCrmPreview ? INITIAL_PREVIEW_PROCESSES : []);
   const [previewProcesses, setPreviewProcesses] = useState<LegalProcess[]>(() => {
     try {
-      const saved = localStorage.getItem('binlegal_crm_preview_processes_v1');
+      const saved = localStorage.getItem('jurisnova_omega_preview_processes_v1');
       if (!saved) return INITIAL_PREVIEW_PROCESSES;
       const existing = JSON.parse(saved) as LegalProcess[];
       const knownIds = new Set(existing.map(process => process.id));
@@ -160,6 +159,8 @@ function MainAppContent() {
       unsubscribe = processService.subscribeAllProcesses((updated) => {
         setProcesses(updated);
       });
+    } else if (!isCrmPreview && currentUser && canUseWorkspace) {
+      unsubscribe = operationsService.subscribeCases(currentUser.uid, setProcesses, () => showNotification('No se pudieron cargar los asuntos asignados.'), userProfile?.role === 'supervisor');
     } else if (!isCrmPreview && currentUser) {
       unsubscribe = processService.subscribeUserProcesses(currentUser.uid, (updated) => {
         setProcesses(updated);
@@ -168,52 +169,32 @@ function MainAppContent() {
     return () => {
       if (unsubscribe) unsubscribe();
     };
-  }, [currentUser, isAdmin, isCrmPreview]);
+  }, [currentUser, isAdmin, canUseWorkspace, isCrmPreview, userProfile?.role]);
 
-  // Real-time Firestore subscription for leads (CRM / José Rafael Vásquez)
   useEffect(() => {
-    let unsubscribe: () => void;
-    if (!isCrmPreview && isAdmin && currentUser) {
-      try {
-        unsubscribe = onSnapshot(collection(db, 'leads'), (snapshot) => {
-          if (!snapshot.empty) {
-            const firestoreLeads = snapshot.docs.map(d => ({ ...d.data(), id: d.id }) as Lead);
-            setLeads(prev => {
-              const map = new Map<string, Lead>();
-              prev.forEach(l => map.set(l.id, l));
-              firestoreLeads.forEach(l => map.set(l.id, l));
-              return Array.from(map.values()).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-            });
-          }
-        }, (err) => {
-          console.warn('Firestore leads subscription note:', err);
-        });
-      } catch (e) {
-        console.warn(e);
-      }
-    }
-    return () => {
-      if (unsubscribe) unsubscribe();
-    };
-  }, [isAdmin, currentUser, isCrmPreview]);
+    setLeads([]);
+    setLeadLoadError('');
+    if (isCrmPreview || !isAdmin || !currentUser) return;
+    return leadService.subscribe(setLeads, () => {
+      setLeads([]);
+      setLeadLoadError('No pudimos cargar las solicitudes. Comprueba tu conexión y los permisos de Firebase.');
+    });
+  }, [currentUser?.uid, isAdmin, isCrmPreview]);
 
   // Keep CRM preview data isolated and persistent in this browser; never write demo edits to production Firestore.
   useEffect(() => {
-    try { localStorage.setItem('binlegal_crm_preview_leads_v1', JSON.stringify(previewLeads)); } catch (err) {
+    try { localStorage.setItem('jurisnova_omega_preview_leads_v1', JSON.stringify(previewLeads)); } catch (err) {
       console.warn('Could not persist CRM preview leads:', err);
     }
   }, [previewLeads]);
 
   useEffect(() => {
-    try { localStorage.setItem('binlegal_crm_preview_processes_v1', JSON.stringify(previewProcesses)); } catch (err) {
+    try { localStorage.setItem('jurisnova_omega_preview_processes_v1', JSON.stringify(previewProcesses)); } catch (err) {
       console.warn('Could not persist CRM preview processes:', err);
     }
   }, [previewProcesses]);
 
-  // Sync leads, startups, posts to local storage
-  useEffect(() => {
-    localStorage.setItem('binlegal_leads_v1', JSON.stringify(leads));
-  }, [leads]);
+  // Only demonstration/community data is stored in this browser.
 
   useEffect(() => {
     localStorage.setItem('binlegal_startups_v1', JSON.stringify(startups));
@@ -281,7 +262,7 @@ function MainAppContent() {
       contacto: '/contacto',
     };
     const normalizedSection = sectionId === 'root' ? 'inicio' : sectionId;
-    const destination = view === 'admin' ? '/crm-preview'
+    const destination = view === 'admin' ? (canUseWorkspace ? '/crm' : '/crm-preview')
       : view === 'portal' ? '/portal'
       : view === 'ecosystem' ? '/ecosistema'
       : sectionRoutes[normalizedSection || 'inicio'] || '/';
@@ -307,6 +288,7 @@ function MainAppContent() {
   // Keep URL, active view and browser Back/Forward navigation in sync.
   useEffect(() => {
     const syncFromLocation = () => {
+      refreshLocation(previous => previous + 1);
       const route = getRouteState(window.location.pathname);
       setCurrentView(route.view);
       setActiveSection(route.section);
@@ -330,15 +312,15 @@ function MainAppContent() {
   // Keep private views closed if a session expires or the role is no longer authorized.
   useEffect(() => {
     if (authLoading) return;
-    if (!isCrmPreview && currentView === 'admin' && (!currentUser || !isAdmin)) {
-      setCurrentView('landing');
-      setActiveSection('inicio');
+    if (!isCrmPreview && currentView === 'admin' && (!currentUser || !canUseWorkspace)) {
+      setCurrentView(currentUser ? 'portal' : 'landing');
+      setActiveSection(currentUser ? 'portal' : 'inicio');
       if (!currentUser) handleOpenAuth('login');
     } else if (currentView === 'portal' && !currentUser) {
       setCurrentView('landing');
       handleOpenAuth('login');
     }
-  }, [authLoading, currentView, currentUser, isAdmin]);
+  }, [authLoading, currentView, currentUser, canUseWorkspace, isCrmPreview]);
 
   const handleSelectAreaForDiagnosis = (area: LegalArea) => {
     setPreselectedArea(area);
@@ -346,88 +328,103 @@ function MainAppContent() {
     showNotification(`Área "${area}" preseleccionada en tu diagnóstico legal.`);
   };
 
-  const handleNewLeadCreated = async (newLead: Lead): Promise<boolean> => {
-    try {
-      // 1. Direct persistence in Firestore collection 'leads'
-      await setDoc(doc(db, 'leads', newLead.id), newLead);
-
-      // 2. Synchronize with React state & CRM lists
-      setLeads(prev => {
-        const exists = prev.some(l => l.id === newLead.id);
-        return exists ? prev : [newLead, ...prev];
-      });
-      setPreviewLeads(prev => {
-        const exists = prev.some(l => l.id === newLead.id);
-        return exists ? prev : [newLead, ...prev];
-      });
-
-      showNotification(`¡Solicitud de "${newLead.company}" registrada en el CRM!`);
+  const receiveLead = async (newLead: Lead, source: 'diagnostic' | 'contact'): Promise<boolean> => {
+    if (isCrmPreview) {
+      const intake = publicIntake(newLead, source);
+      setPreviewLeads(previous => [intake, ...previous.filter(item => item.id !== intake.id)]);
+      showNotification('Solicitud de muestra guardada en este navegador.');
       return true;
-    } catch (err) {
-      console.error('Error al persistir solicitud en Firestore:', err);
-      throw err;
     }
+    await leadService.submit(newLead, source);
+    showNotification('Solicitud recibida por el despacho.');
+    return true;
+  };
+  const handleNewLeadCreated = (lead: Lead) => receiveLead(lead, 'diagnostic');
+
+  const persistLead = async (lead: Lead): Promise<void> => {
+    if(lead.commercial)lead={...lead,commercial:validateCommercial(lead.commercial)};
+    lead = {...lead,status:commercialStatus(lead)};
+    if (isCrmPreview) {
+      const current=previewLeads.find(item=>item.id===lead.id);
+      if(current && (current.revision||0)!==(lead.revision||0)) throw new Error('La solicitud cambió. Revisa la versión actual antes de guardar.');
+      setPreviewLeads(previous => previous.map(item => item.id === lead.id ? {...lead,revision:(lead.revision||0)+1} : item));
+      return;
+    }
+    if (!currentUser || !isAdmin) throw new Error('Inicia sesión con una cuenta autorizada del despacho.');
+    const saved = await leadService.update(lead, currentUser.uid);
+    setLeads(previous => previous.map(item => item.id === saved.id ? saved : item));
   };
 
-  const handleUpdateLeadStatus = async (leadId: string, newStatus: LeadStatus) => {
-    setLeads(prev => prev.map(lead => {
-      if (lead.id === leadId) {
-        return { ...lead, status: newStatus };
-      }
-      return lead;
-    }));
-    showNotification('Estado del prospecto actualizado en el pipeline.');
-    try {
-      await setDoc(doc(db, 'leads', leadId), { status: newStatus }, { merge: true });
-    } catch (err) {
-      console.warn('Firestore update status:', err);
-    }
+  const handleUpdateLead = async (updated: Lead) => {
+    try { await persistLead(updated); }
+    catch { showNotification('No se pudo guardar el cambio. Revisa la conexión y vuelve a intentarlo.'); }
   };
 
-  const handleAddInternalNote = async (leadId: string, noteText: string, author: string) => {
-    const newNote = {
-      id: `note-${Date.now()}`,
-      author,
-      text: noteText,
-      timestamp: new Date().toISOString().replace('T', ' ').slice(0, 16)
-    };
-    setLeads(prev => prev.map(lead => {
-      if (lead.id === leadId) {
-        return {
-          ...lead,
-          internalNotes: [...lead.internalNotes, newNote]
-        };
-      }
-      return lead;
-    }));
-    showNotification('Nota interna guardada en esta vista; sincronizando con el CRM.');
-    try {
-      await setDoc(doc(db, 'leads', leadId), { internalNotes: arrayUnion(newNote) }, { merge: true });
-      showNotification('Nota interna guardada y sincronizada.');
-    } catch (err) {
-      console.error('Could not persist internal note:', err);
-      showNotification('La nota quedó en pantalla, pero no se pudo sincronizar. Verifica los permisos de Firebase.');
-    }
+  const handleUpdateLeadStatus = async (_leadId: string, _status: LeadStatus) => {
+    showNotification('La situación comercial se calcula desde los registros de contacto, reunión, envío y aceptación.');
   };
 
-  const handleAddManualLead = async (manualLead: Lead) => {
-    setLeads(prev => [manualLead, ...prev]);
-    showNotification(`Lead "${manualLead.company}" registrado en el pipeline.`);
-    try {
-      await setDoc(doc(db, 'leads', manualLead.id), manualLead);
-    } catch (err) {
-      console.warn('Could not save manual lead to Firestore:', err);
-    }
+  const handleAddInternalNote = async (leadId: string, text: string, author: string) => {
+    const lead = (isCrmPreview ? previewLeads : leads).find(item => item.id === leadId);
+    if (!lead) return;
+    await handleUpdateLead({ ...lead, internalNotes: [...lead.internalNotes, {
+      id: crypto.randomUUID(), author: userProfile?.displayName || author, text,
+      timestamp: new Date().toISOString(),
+    }] });
   };
 
-  const handleUpdateLead = async (updatedLead: Lead) => {
-    setLeads(prev => prev.map(lead => lead.id === updatedLead.id ? updatedLead : lead));
-    setPreviewLeads(prev => prev.map(lead => lead.id === updatedLead.id ? updatedLead : lead));
-    try {
-      await setDoc(doc(db, 'leads', updatedLead.id), updatedLead, { merge: true });
-    } catch (err) {
-      console.warn('Firestore update lead:', err);
+  const handleAddManualLead = async (lead: Lead): Promise<void> => {
+    if (isCrmPreview) {
+      const saved = cleanLead(lead, 'manual');
+      setPreviewLeads(previous => [saved, ...previous.filter(item => item.id !== saved.id)]);
+      return;
     }
+    if (!currentUser || !isAdmin) throw new Error('Necesitas una cuenta autorizada del despacho.');
+    const saved = await leadService.createManual(lead, currentUser.uid);
+    setLeads(previous => [saved, ...previous.filter(item => item.id !== saved.id)]);
+  };
+
+  const handleSaveFollowUp = async (lead: Lead, followUp: LeadFollowUp) => {
+    await persistLead({ ...lead, followUp: validateFollowUp(followUp) });
+  };
+
+  const handleReviewOrClose = async (process:LegalProcess,closing:boolean,summary:string,documentId:string) => {
+    const saved=await operationsService.reviewOrClose(process,{uid:currentUser?.uid||'demo-admin-uid-01',name:userProfile?.displayName||'Elena Marín',admin:isCrmPreview||isAdmin},isCrmPreview,closing,summary,documentId);
+    if(isCrmPreview)setPreviewProcesses(previous=>previous.map(item=>item.id===process.id?{...item,...saved}:item));
+  };
+
+  const handleSaveCaseControls = async (process:LegalProcess) => {
+    const saved=await operationsService.saveCaseControls(process,{uid:currentUser?.uid||'demo-admin-uid-01',name:userProfile?.displayName||'Elena Marín',admin:isCrmPreview||isAdmin},isCrmPreview);
+    if(isCrmPreview) setPreviewProcesses(previous=>previous.map(item=>item.id===process.id?{...item,...saved}:item));
+  };
+
+  const handleStartCase = async (process: LegalProcess) => {
+    const startAuthorization = await operationsService.startCase(process, { uid: currentUser?.uid || 'demo-admin-uid-01', name: userProfile?.displayName || 'Elena Marín', admin: isCrmPreview || isAdmin }, isCrmPreview);
+    if (isCrmPreview) setPreviewProcesses(previous => previous.map(item => item.id === process.id ? { ...item, startAuthorization, caseStage: 'in_progress', status: 'redaccion' } : item));
+  };
+
+  const handleSaveCommercial = async (lead: Lead, activity: CommercialActivity) => {
+    const saved=validateCommercial(activity);
+    const actorUid=currentUser?.uid || 'demo-admin-uid-01';
+    if(saved.contact && JSON.stringify(saved.contact)!==JSON.stringify(lead.commercial?.contact))saved.contact.actorUid=actorUid;
+    if(saved.meeting && JSON.stringify(saved.meeting)!==JSON.stringify(lead.commercial?.meeting))saved.meeting.actorUid=actorUid;
+    await persistLead({...lead,commercial:saved});
+  };
+
+  const handleSaveBudget = async (lead: Lead, budget: LeadBudget) => {
+    validateBudgetDispatch(budget);
+    const saved = budget.status === 'enviado' ? {...budget,sentAt:budget.sentAt || new Date().toISOString(),sentByUid:currentUser?.uid || 'demo-admin-uid-01',sentByName:budget.sentByName || userProfile?.displayName || 'Elena Marín'} : budget;
+    await persistLead({ ...lead, budget:saved });
+  };
+  const handleAcceptServices = async (lead: Lead, ids: string[], evidence: string) => {
+    const actor = { uid: currentUser?.uid || 'demo-admin-uid-01', name: userProfile?.displayName || 'Elena Marín', admin: isCrmPreview || isAdmin };
+    const result = await operationsService.accept(lead, ids, evidence, actor, isCrmPreview);
+    const updated = { ...lead, status:'cliente_activo' as const, acceptedBudget: result.acceptance, revision: (lead.revision || 0) + 1 };
+    if (isCrmPreview) {
+      setPreviewLeads(previous => previous.map(item => item.id === lead.id ? updated : item));
+      setPreviewProcesses(previous => [...new Map([...previous, ...result.processes].map(item => [item.id, item])).values()]);
+    }
+    // Real subscriptions refresh the authoritative lead and cases after the transaction.
   };
 
   const handleUpdateProcessStatus = async (
@@ -456,6 +453,12 @@ function MainAppContent() {
       console.error(err);
       showNotification('Error al actualizar estatus.');
     }
+  };
+
+  const handleAssignProcess = async (processId: string, uid: string, name: string) => {
+    if (!currentUser || !(isAdmin || userProfile?.role === 'supervisor')) throw new Error('Sin permiso para asignar trámites.');
+    await updateDoc(doc(db, 'processes', processId), { assignedLawyer: name, assignedLawyerId: uid, assignedLawyerIds: [uid], assignmentStatus: 'assigned', updatedAt: new Date().toISOString().slice(0, 10) });
+    showNotification(`Trámite asignado a ${name}.`);
   };
 
   const handleUpdateProcessLawyer = async (processId: string, lawyer: string) => {
@@ -528,10 +531,7 @@ function MainAppContent() {
         isOpen={isAuthModalOpen}
         defaultMode={authModalMode}
         onClose={() => setIsAuthModalOpen(false)}
-        onSuccess={() => {
-          showNotification('¡Sesión iniciada con éxito!');
-          handleNavigate('portal');
-        }}
+        onSuccess={() => { window.location.assign('/crm'); }}
       />
 
       {/* Share Platform Modal */}
@@ -561,7 +561,7 @@ function MainAppContent() {
                 <span className="text-xl">🧪</span>
                 <div>
                   <h3 className="text-sm sm:text-base font-bold text-white">Simulador de Diagnóstico Legal PYME</h3>
-                  <p className="text-xs text-[#cfd1d0]">Formulario real: al completarlo, se calculará el riesgo y se creará la solicitud en el CRM.</p>
+                  <p className="text-xs text-[#cfd1d0]">{isCrmPreview ? 'Prueba local: se creará una solicitud de muestra.' : 'La solicitud se confirmará después de guardarse.'}</p>
                 </div>
               </div>
               <button
@@ -588,24 +588,40 @@ function MainAppContent() {
         </div>
       )}
 
-      {/* Main CRM Application Workspace (100% Exclusive) */}
+      {currentView !== 'landing' && !isCrmPreview && <Navbar currentView={currentView} activeSection={activeSection} onNavigate={handleNavigate} onOpenAuth={handleOpenAuth} unreadLeadsCount={unreadCount} />}
+      {currentView === 'landing' && <DemoLanding onOpenCrm={() => handleNavigate('admin')} />}
+      {currentView === 'portal' && currentUser && <ClientPortal processes={processes} onRequestService={lead => receiveLead(lead, 'contact')} onBackToLanding={() => handleNavigate('landing', 'inicio')} />}
+      {currentView === 'admin' && !isCrmPreview && authLoading && <p role="status" className="p-8">Comprobando acceso…</p>}
+      {leadLoadError && currentView === 'admin' && <p role="alert" className="m-4 rounded-lg bg-red-50 p-4 text-red-800">{leadLoadError}</p>}
+      {currentView === 'admin' && (isCrmPreview || (!authLoading && currentUser && canUseWorkspace)) && <>
+      {isCrmPreview && <p className="border-b border-cyan-200 bg-cyan-50 px-6 py-3 text-sm text-cyan-950">Omega · Demo de Cokito’s Lab con firma y asuntos ficticios. Los cambios se guardan solo en este navegador.</p>}
+      {usingFirebaseEmulators&&<p role="status" className="border-b bg-blue-950 px-6 py-3 text-sm text-white">Entorno local de pruebas · Firebase emulado · Datos ficticios · Sin conexión a producción</p>}
+      {usingFirebaseStaging&&<p role="status" className="border-b bg-amber-950 px-6 py-3 text-sm text-white">Firebase de pruebas · Usa solo datos ficticios · Los permisos y archivos aún están en configuración</p>}
+      {/* Main CRM workspace */}
       <AdminCRM
+        onSaveCommercial={handleSaveCommercial}
+        onReviewOrClose={handleReviewOrClose}
+        onSaveCaseControls={handleSaveCaseControls}
+        onStartCase={handleStartCase}
+        onAcceptServices={handleAcceptServices}
+        onSaveBudget={handleSaveBudget}
+        onSaveFollowUp={handleSaveFollowUp}
         leads={isCrmPreview ? previewLeads : leads}
         processes={isCrmPreview ? previewProcesses : processes}
         onCreateProcess={handleCreateProcess}
-        onUpdateLeadStatus={isCrmPreview
-          ? (leadId, newStatus) => setPreviewLeads(prev => prev.map(lead => lead.id === leadId ? { ...lead, status: newStatus } : lead))
-          : handleUpdateLeadStatus}
+        onUpdateLeadStatus={handleUpdateLeadStatus}
         onAddInternalNote={isCrmPreview
           ? (leadId, noteText, author) => setPreviewLeads(prev => prev.map(lead => lead.id === leadId ? { ...lead, internalNotes: [...lead.internalNotes, { id: `preview-note-${Date.now()}`, author, text: noteText, timestamp: new Date().toISOString().replace('T', ' ').slice(0, 16) }] } : lead))
           : handleAddInternalNote}
-        onAddManualLead={isCrmPreview ? (newLead) => setPreviewLeads(prev => [newLead, ...prev]) : handleAddManualLead}
-        onUpdateProcessStatus={isCrmPreview ? (processId, status, progress, milestone) => setPreviewProcesses(prev => prev.map(process => process.id === processId ? { ...process, status, progress: Math.max(0, Math.min(100, progress)), nextMilestone: milestone || process.nextMilestone, updatedAt: new Date().toISOString().slice(0, 10) } : process)) : handleUpdateProcessStatus}
+        onAddManualLead={handleAddManualLead}
+        onUpdateProcessStatus={isCrmPreview ? (processId, status, progress, milestone) => {if(status==='completado'||progress>=100){showNotification('Utiliza la revisión final y la comprobación de entrega para finalizar.');return;}setPreviewProcesses(prev => prev.map(process => process.id === processId ? { ...process, status, progress: Math.max(0, Math.min(100, progress)), nextMilestone: milestone || process.nextMilestone, updatedAt: new Date().toISOString().slice(0, 10) } : process));} : handleUpdateProcessStatus}
+        onAssignProcess={isCrmPreview ? async (processId, uid, name) => setPreviewProcesses(previous => previous.map(item => item.id === processId ? { ...item, assignedLawyer: name, assignedLawyerId: uid, assignedLawyerIds: [uid], assignmentStatus: 'assigned' } : item)) : handleAssignProcess}
         onUpdateProcessLawyer={isCrmPreview ? (processId, lawyer) => setPreviewProcesses(prev => prev.map(process => process.id === processId ? { ...process, assignedLawyer: lawyer, updatedAt: new Date().toISOString().slice(0, 10) } : process)) : handleUpdateProcessLawyer}
-        onBackToLanding={() => setShowDiagnosticModal(true)}
+        onBackToLanding={() => handleNavigate('landing', 'inicio')}
         onOpenDiagnostic={() => setShowDiagnosticModal(true)}
         onUpdateLead={handleUpdateLead}
       />
+      </>}
 
     </div>
   );
@@ -615,8 +631,8 @@ export default function App() {
   return (
     <AuthProvider>
       <MainAppContent />
-      <Analytics />
-      <SpeedInsights />
+      {!usingFirebaseEmulators&&!usingFirebaseStaging&&<Analytics />}
+      {!usingFirebaseEmulators&&!usingFirebaseStaging&&<SpeedInsights />}
     </AuthProvider>
   );
 }

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { Mail, Phone, MapPin, Send, CheckCircle2, MessageCircle, Clock, ShieldCheck, ArrowRight, MessageSquare, Instagram } from 'lucide-react';
 import { trackClick, trackWhatsAppClick, trackAuthAction } from '../lib/analytics';
@@ -7,7 +7,7 @@ import { Lead } from '../types';
 interface ContactSectionProps {
   onOpenAdmin: () => void;
   onOpenAuth?: (mode?: 'login' | 'register' | 'newsletter') => void;
-  onNewLeadCreated?: (lead: Lead) => void;
+  onNewLeadCreated: (lead: Lead) => Promise<boolean>;
 }
 
 export const ContactSection: React.FC<ContactSectionProps> = ({ 
@@ -23,21 +23,24 @@ export const ContactSection: React.FC<ContactSectionProps> = ({
   const [submitted, setSubmitted] = useState(false);
   const [submittedLeadInfo, setSubmittedLeadInfo] = useState<{ id: string; email: string } | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState('');
+  const pending = useRef<Lead | null>(null);
 
   const [newsletterEmail, setNewsletterEmail] = useState('');
   const [newsletterSubscribed, setNewsletterSubscribed] = useState(false);
   const [newsletterLoading, setNewsletterLoading] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim() || !email.trim() || !message.trim()) return;
+    if (isSubmitting || !name.trim() || !email.trim() || !message.trim()) return;
 
     setIsSubmitting(true);
+    setSubmitError('');
     trackClick('contacto', 'enviar_mensaje_directo', {
       has_company: Boolean(company.trim()),
     });
 
-    const leadId = `lead-contact-${Date.now()}`;
+    const leadId = crypto.randomUUID();
     const newContactLead: Lead = {
       id: leadId,
       fullName: name.trim(),
@@ -48,7 +51,7 @@ export const ContactSection: React.FC<ContactSectionProps> = ({
       areasOfInterest: ['Asesoría General'],
       notes: message.trim(),
       status: 'nuevo_lead',
-      createdAt: new Date().toISOString().replace('T', ' ').slice(0, 16),
+      createdAt: new Date().toISOString(),
       calculatedRiskScore: 0,
       riskSummary: `Consulta enviada desde el formulario de contacto web: "${message.trim().slice(0, 140)}${message.length > 140 ? '...' : ''}"`,
       riskItems: [],
@@ -62,17 +65,17 @@ export const ContactSection: React.FC<ContactSectionProps> = ({
       ]
     };
 
-    if (onNewLeadCreated) {
-      onNewLeadCreated(newContactLead);
-    }
-
-    setSubmittedLeadInfo({ id: leadId, email: email.trim() });
-    setSubmitted(true);
-    setIsSubmitting(false);
-    setName('');
-    setEmail('');
-    setCompany('');
-    setMessage('');
+    try {
+      const same = pending.current && pending.current.fullName === newContactLead.fullName && pending.current.email === newContactLead.email && pending.current.company === newContactLead.company && pending.current.notes === newContactLead.notes;
+      if (!same) pending.current = newContactLead;
+      const sent = pending.current!;
+      if (!await onNewLeadCreated(sent)) throw new Error('No se pudo confirmar el envío.');
+      setSubmittedLeadInfo({ id: sent.id, email: sent.email });
+      setSubmitted(true); pending.current = null;
+      setName(''); setEmail(''); setCompany(''); setMessage('');
+    } catch {
+      setSubmitError('No se pudo confirmar el envío. Tus datos siguen aquí; vuelve a intentarlo.');
+    } finally { setIsSubmitting(false); }
   };
 
   const handleNewsletterSubmit = async (e: React.FormEvent) => {
@@ -146,7 +149,8 @@ export const ContactSection: React.FC<ContactSectionProps> = ({
                 </div>
               </div>
             ) : (
-              <form onSubmit={handleSubmit} className="space-y-4">
+              <form onSubmit={handleSubmit} className="space-y-4" aria-busy={isSubmitting}>
+                {submitError && <p role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{submitError}</p>}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
                     <label className="block text-xs font-semibold text-slate-700 mb-1">

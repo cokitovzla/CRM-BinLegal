@@ -738,6 +738,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           )}
 
           {/* Demo Fast Access (Compact, non-intrusive) */}
+          {window.location.pathname.replace(/\/$/, '') === '/crm-preview' && <>
           <div className="pt-2 border-t border-neutral-100">
             <div className="text-[10px] font-semibold text-neutral-500 uppercase tracking-wider mb-2 flex items-center gap-1.5">
               <Sparkles className="w-3 h-3 text-neutral-700" />
@@ -769,7 +770,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 </button>
               )}
             </div>
-          </div>
+          </div></>}
 
           {/* Bottom thumb cancel button */}
           <div className="pt-1 pb-1 text-center">

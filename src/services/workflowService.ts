@@ -7,6 +7,7 @@ import {
   query,
   updateDoc,
   where,
+  writeBatch,
 } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import type { CaseActivity, WorkflowComment, WorkflowTask, WorkflowTaskStatus } from '../types';
@@ -27,10 +28,13 @@ export const workflowService = {
     }, error => onError?.(error));
   },
 
-  subscribeCaseComments(caseId: string, onUpdate: (comments: WorkflowComment[]) => void, onError?: (error: Error) => void) {
-    const q = query(commentsCollection, where('caseId', '==', caseId), orderBy('createdAt', 'asc'));
+  subscribeCaseComments(caseId: string, clientOnly: boolean, onUpdate: (comments: WorkflowComment[]) => void, onError?: (error: Error) => void) {
+    const q = clientOnly
+      ? query(commentsCollection, where('caseId', '==', caseId), where('visibility', '==', 'client'))
+      : query(commentsCollection, where('caseId', '==', caseId));
     return onSnapshot(q, snapshot => {
-      onUpdate(snapshot.docs.map(item => ({ ...item.data(), id: item.id }) as WorkflowComment));
+      onUpdate(snapshot.docs.map(item => ({ ...item.data(), id: item.id }) as WorkflowComment)
+        .sort((a, b) => a.createdAt.localeCompare(b.createdAt)));
     }, error => onError?.(error));
   },
 
@@ -120,9 +124,15 @@ export const workflowService = {
   },
 
   async addComment(comment: Omit<WorkflowComment, 'id' | 'createdAt'>) {
+    const body = comment.body.trim();
+    if (!body) throw new Error('Escribe el mensaje antes de publicarlo.');
+    if (body.length > 4000) throw new Error('El mensaje admite hasta 4000 caracteres.');
     const now = new Date().toISOString();
-    const result = await addDoc(commentsCollection, { ...comment, createdAt: now });
-    await addDoc(activityCollection, {
+    const commentRef = doc(commentsCollection);
+    const activityRef = doc(activityCollection);
+    const batch = writeBatch(db);
+    batch.set(commentRef, { ...comment, body, createdAt: now });
+    batch.set(activityRef, {
       caseId: comment.caseId,
       taskId: comment.taskId || null,
       actorUid: comment.authorUid,
@@ -132,6 +142,7 @@ export const workflowService = {
       visibility: comment.visibility,
       createdAt: now,
     });
-    return result.id;
+    await batch.commit();
+    return commentRef.id;
   },
 };

@@ -1,13 +1,12 @@
 rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
-    // MVP: authenticated users can upload and retrieve files in the case library.
-    // Tighten this to case-level roles before production use.
-    match /client-documents/{caseId}/{uploaderUid}/{fileName} {
-      allow read: if request.auth != null;
-      allow write: if request.auth != null
-        && request.resource.size < 25 * 1024 * 1024
-        && request.resource.contentType.matches('application/pdf|image/.*|application/msword|application/vnd.openxmlformats-officedocument.*');
+    // Production remains locked until case authorization is moved to the
+    // default Firestore database or enforced by a trusted backend. Storage
+    // Rules can only consult the default database, while this app currently
+    // stores its case records in a named Firestore database.
+    match /{allPaths=**} {
+      allow read, write: if false;
     }
   }
 }

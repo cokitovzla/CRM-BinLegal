@@ -17,7 +17,7 @@ service cloud.firestore {
     function isAdmin() {
       return isSignedIn() && (
         exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
-        (request.auth.token.email != null && (
+        (request.auth.token.email_verified == true && request.auth.token.email != null && (
           request.auth.token.email == 'binlegal.digital@gmail.com' ||
           request.auth.token.email == 'anat.vacaviejavzla@gmail.com' ||
           request.auth.token.email == 'contacto@binlegal.com'
@@ -36,6 +36,7 @@ service cloud.firestore {
     function isStaff() {
       return isAdmin() || (hasUserProfile() && role() in ['lawyer', 'supervisor', 'intern', 'secretary']);
     }
+    function isSupervisor() { return hasUserProfile() && role() == 'supervisor'; }
 
     function processExists(processId) {
       return exists(/databases/$(database)/documents/processes/$(processId));
@@ -49,10 +50,11 @@ service cloud.firestore {
       return isSignedIn() && (
         data.userId == request.auth.uid ||
         isAdmin() ||
+        (isSupervisor() && 'assignmentStatus' in data && data.assignmentStatus == 'pending') ||
         (isStaff() && (
-          data.assignedLawyerId == request.auth.uid ||
-          data.caseLeadUid == request.auth.uid ||
-          data.supervisorUid == request.auth.uid ||
+          ('assignedLawyerId' in data && data.assignedLawyerId == request.auth.uid) ||
+          ('caseLeadUid' in data && data.caseLeadUid == request.auth.uid) ||
+          ('supervisorUid' in data && data.supervisorUid == request.auth.uid) ||
           ('assignedLawyerIds' in data && data.assignedLawyerIds.hasAny([request.auth.uid]))
         ))
       );
@@ -65,7 +67,8 @@ service cloud.firestore {
     function isCaseLead(processId) {
       return isAdmin() || (
         canAccessProcess(processId) &&
-        processData(processId).caseLeadUid == request.auth.uid
+        (('caseLeadUid' in processData(processId) && processData(processId).caseLeadUid == request.auth.uid) ||
+         ('assignedLawyerId' in processData(processId) && processData(processId).assignedLawyerId == request.auth.uid))
       );
     }
 
@@ -78,8 +81,8 @@ service cloud.firestore {
 
     // User profiles. A user cannot promote their own account or change its role.
     match /users/{userId} {
-      allow get: if isOwner(userId) || isAdmin();
-      allow list: if isAdmin();
+      allow get: if isOwner(userId) || isAdmin() || (isSupervisor() && resource.data.role in ['lawyer','supervisor','intern','secretary']);
+      allow list: if isAdmin() || (isSupervisor() && resource.data.role in ['lawyer','supervisor','intern','secretary']);
       allow create: if isOwner(userId) &&
         request.resource.data.userId == userId &&
         (request.resource.data.role == 'client' || isAdmin());
@@ -95,18 +98,50 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
+    match /contactLinks/{linkId} {
+      allow get, list: if isAdmin() || (isStaff() && resource.data.staffUid == request.auth.uid);
+      allow create, update: if isAdmin() && request.resource.data.keys().hasOnly(['staffUid','leadId','name','email','company','createdAt']) && request.resource.data.staffUid is string && exists(/databases/$(database)/documents/users/$(request.resource.data.staffUid)) && get(/databases/$(database)/documents/users/$(request.resource.data.staffUid)).data.role in ['lawyer','supervisor','intern','secretary'] && request.resource.data.leadId is string && exists(/databases/$(database)/documents/leads/$(request.resource.data.leadId)) && request.resource.data.name == get(/databases/$(database)/documents/leads/$(request.resource.data.leadId)).data.fullName && request.resource.data.email == get(/databases/$(database)/documents/leads/$(request.resource.data.leadId)).data.email && request.resource.data.company == get(/databases/$(database)/documents/leads/$(request.resource.data.leadId)).data.company;
+      allow delete: if isAdmin();
+    }
+
     // Legal cases / processes. Clients own their records; internal staff require an
     // explicit case assignment, lead assignment, or supervisor assignment.
+    function validCaseStart(before, after) {
+      return !('caseStage' in after) || after.caseStage != 'in_progress' ||
+        (('caseStage' in before) && before.caseStage != 'not_started') ||
+        ((!('caseControls' in before) || before.caseControls.hold.state == 'none') && after.startAuthorization.requirements is string && after.startAuthorization.requirements.size() > 0 &&
+         after.startAuthorization.requirements.size() <= 4000 && after.startAuthorization.actorUid == request.auth.uid &&
+         after.startAuthorization.evidence is string && after.startAuthorization.exceptionReason is string &&
+         after.startAuthorization.evidence.size() <= 4000 && after.startAuthorization.exceptionReason.size() <= 4000 &&
+         (after.startAuthorization.evidence.size() > 0 || after.startAuthorization.exceptionReason.size() > 0));
+    }
+    function validCaseFinish(before, after) {
+      return (after.status != 'completado' && (!('caseStage' in after) || after.caseStage != 'completed')) ||
+        (before.status == 'completado' && after.status == 'completado') ||
+        (('caseStage' in before) && before.caseStage == 'final_review' && after.caseStage == 'completed' &&
+         after.closure.actorUid == request.auth.uid && after.closure.summary is string && after.closure.summary.size() > 0 &&
+         get(/databases/$(database)/documents/clientDocuments/$(after.closure.documentId)).data.caseId == before.id &&
+         get(/databases/$(database)/documents/clientDocuments/$(after.closure.documentId)).data.clientId == before.userId &&
+         get(/databases/$(database)/documents/clientDocuments/$(after.closure.documentId)).data.kind == 'final_deliverable' &&
+         get(/databases/$(database)/documents/clientDocuments/$(after.closure.documentId)).data.status == 'delivered' &&
+         get(/databases/$(database)/documents/clientDocuments/$(after.closure.documentId)).data.visibleToClient == true);
+    }
+    function workRevision(data) { return ('workRevision' in data) ? data.workRevision : 0; }
+    function permitsTaskMovement(caseId, next) {
+      let parent = processData(caseId);
+      return next == 'cancelled' || (
+        (!('caseStage' in parent) || parent.caseStage in ['in_progress','final_review']) &&
+        (!('caseControls' in parent) || parent.caseControls.hold.state != 'suspended'));
+    }
+    function taskWriteTracksCase(caseId) {
+      return getAfter(/databases/$(database)/documents/processes/$(caseId)).data.workRevision == workRevision(processData(caseId)) + 1;
+    }
     match /processes/{processId} {
       allow get, list: if canAccessProcessData(resource.data);
-      allow create: if isSignedIn() && (
-        isAdmin() ||
-        (request.resource.data.userId == request.auth.uid &&
-         (!('assignedLawyerId' in request.resource.data) || request.resource.data.assignedLawyerId == null))
-      );
-      allow update: if isAdmin() || (
+      allow create: if isAdmin();
+      allow update: if (isSupervisor() && resource.data.assignmentStatus == 'pending' && request.resource.data.assignmentStatus == 'assigned' && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['assignedLawyer','assignedLawyerId','assignedLawyerIds','assignmentStatus','updatedAt']) && request.resource.data.assignedLawyerId is string && exists(/databases/$(database)/documents/users/$(request.resource.data.assignedLawyerId)) && get(/databases/$(database)/documents/users/$(request.resource.data.assignedLawyerId)).data.role in ['lawyer','supervisor','intern','secretary'] && request.resource.data.assignedLawyer == get(/databases/$(database)/documents/users/$(request.resource.data.assignedLawyerId)).data.displayName && request.resource.data.assignedLawyerIds == [request.resource.data.assignedLawyerId]) || (isAdmin() && validCaseStart(resource.data, request.resource.data) && validCaseFinish(resource.data, request.resource.data)) || (isStaff() && canAccessProcessData(resource.data) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['workRevision']) && request.resource.data.workRevision == workRevision(resource.data) + 1) || (
         isStaff() &&
-        canAccessProcessData(resource.data) &&
+        isCaseLead(processId) && validCaseFinish(resource.data, request.resource.data) &&
         request.resource.data.userId == resource.data.userId &&
         request.resource.data.diff(resource.data).affectedKeys().hasOnly([
           'status', 'progress', 'nextMilestone', 'updatedAt', 'milestones',
@@ -116,37 +151,89 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
-    // Workflow tasks are always tied to a case. Client-visible tasks can be read
-    // by that case's client; internal tasks are restricted to assigned staff/admin.
-    match /workflowTasks/{taskId} {
-      allow get, list: if isAdmin() || (
-        isSignedIn() && canAccessProcess(resource.data.caseId) &&
-        (isStaff() || (resource.data.clientId == request.auth.uid && resource.data.visibility == 'client'))
+    function needsTaskReview(data) {
+      return ('requiresReview' in data) ? data.requiresReview : data.requiresJoseApproval;
+    }
+    function validWorkMember(uid) {
+      return uid is string && ((uid == request.auth.uid && isAdmin()) ||
+        (exists(/databases/$(database)/documents/users/$(uid)) &&
+         get(/databases/$(database)/documents/users/$(uid)).data.role in ['admin','lawyer','supervisor','intern','secretary']));
+    }
+    function validTask(data) {
+      return data.title is string && data.title.size() > 0 && data.title.size() <= 200 &&
+        data.expectedResult is string && data.expectedResult.size() > 0 && data.expectedResult.size() <= 4000 &&
+        validWorkMember(data.assignedToUid) &&
+        (!needsTaskReview(data) || validWorkMember(data.reviewerUid));
+    }
+    function taskRevision(data) { return ('revision' in data) ? data.revision : 0; }
+    function validTaskMovement(before, after) {
+      let reviewer = isAdmin() || (('reviewerUid' in before) && before.reviewerUid == request.auth.uid);
+      let worker = isAdmin() || before.assignedToUid == request.auth.uid;
+      let reason = after.reviewNote is string && after.reviewNote.size() > 0;
+      return (
+        (before.status == 'assigned' && after.status == 'in_progress' && worker) ||
+        (before.status == 'in_progress' && after.status == 'pending_approval' && worker &&
+          needsTaskReview(before) && before.reviewerUid is string) ||
+        (before.status == 'in_progress' && after.status == 'completed' && worker && !needsTaskReview(before)) ||
+        (before.status == 'pending_approval' && after.status == 'completed' && reviewer) ||
+        (before.status == 'pending_approval' && after.status == 'changes_requested' && reviewer && reason) ||
+        (before.status == 'changes_requested' && after.status == 'in_progress' && worker) ||
+        (before.status == 'completed' && after.status == 'in_progress' && worker && reason) ||
+        (before.status in ['assigned','in_progress','changes_requested'] && after.status == 'cancelled' && worker && reason) ||
+        (before.status == 'cancelled' && after.status == 'assigned' && worker && reason)
       );
-      allow create: if isStaff() &&
-        canAccessProcess(request.resource.data.caseId) &&
-        request.resource.data.createdByUid == request.auth.uid;
-      allow update: if isAdmin() || (
-        isStaff() &&
-        canAccessProcess(resource.data.caseId) &&
+    }
+    match /workflowTasks/{taskId} {
+      allow get, list: if isAdmin() || (isSignedIn() && (
+        resource.data.assignedToUid == request.auth.uid ||
+        (('reviewerUid' in resource.data) && resource.data.reviewerUid == request.auth.uid) ||
+        (canAccessProcess(resource.data.caseId) && (isStaff() || resource.data.visibility == 'client'))
+      ));
+      allow create: if isAdmin() && canAccessProcess(request.resource.data.caseId) &&
+        request.resource.data.createdByUid == request.auth.uid &&
+        request.resource.data.status == 'assigned' && request.resource.data.revision == 1 &&
+        validTask(request.resource.data) && taskWriteTracksCase(request.resource.data.caseId) &&
+        (!('caseStage' in processData(request.resource.data.caseId)) || processData(request.resource.data.caseId).caseStage != 'completed');
+      allow update: if isStaff() &&
+        permitsTaskMovement(resource.data.caseId, request.resource.data.status) && taskWriteTracksCase(resource.data.caseId) &&
         request.resource.data.caseId == resource.data.caseId &&
         request.resource.data.clientId == resource.data.clientId &&
-        (
-          !request.resource.data.diff(resource.data).affectedKeys().hasAny(['assignedToUid', 'assignedToName']) ||
-          (isCaseLead(resource.data.caseId) && request.resource.data.reassignmentStatus == 'approved')
-        ) &&
-        (
-          !('reassignmentStatus' in request.resource.data) ||
-          request.resource.data.reassignmentStatus == resource.data.reassignmentStatus ||
-          request.resource.data.reassignmentStatus == 'pending_approval' ||
-          (request.resource.data.reassignmentStatus == 'approved' && isCaseLead(resource.data.caseId)) ||
-          (request.resource.data.reassignmentStatus == 'rejected' && isCaseLead(resource.data.caseId))
-        )
-      );
+        request.resource.data.revision == taskRevision(resource.data) + 1 && (
+          (request.resource.data.status != resource.data.status &&
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'status','reviewNote','updatedAt','completedAt','revision'
+            ]) && validTaskMovement(resource.data, request.resource.data)) ||
+          (isAdmin() && request.resource.data.status == resource.data.status && validTask(request.resource.data))
+        );
       allow delete: if isAdmin();
     }
 
+    match /workNotifications/{notificationId} {
+      allow read: if isSignedIn() && resource.data.recipientUid == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.actorUid == request.auth.uid &&
+        canAccessProcess(request.resource.data.caseId) &&
+        getAfter(/databases/$(database)/documents/workflowTasks/$(request.resource.data.taskId)).data.caseId == request.resource.data.caseId &&
+        (request.resource.data.recipientUid == getAfter(/databases/$(database)/documents/workflowTasks/$(request.resource.data.taskId)).data.assignedToUid ||
+         request.resource.data.recipientUid == getAfter(/databases/$(database)/documents/workflowTasks/$(request.resource.data.taskId)).data.reviewerUid);
+      allow update: if isSignedIn() && resource.data.recipientUid == request.auth.uid &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['readAt']) &&
+        request.resource.data.readAt is string;
+      allow delete: if false;
+    }
+
     // Comments have separate internal/client visibility.
+    function validComment(data) {
+      return data.keys().hasOnly([
+          'caseId','taskId','documentId','authorUid','authorName','authorRole',
+          'body','visibility','createdAt','mentions'
+        ]) &&
+        data.caseId is string && data.authorUid is string && data.authorName is string &&
+          data.authorName.size() > 0 && data.authorName.size() <= 200 &&
+          data.authorRole in ['admin','lawyer','supervisor','intern','secretary','client'] &&
+        data.body is string && data.body.size() > 0 && data.body.size() <= 4000 &&
+          data.visibility in ['internal','client'] && data.createdAt is string &&
+          data.mentions is list && data.mentions.size() <= 20;
+    }
     match /workflowComments/{commentId} {
       allow get, list: if isAdmin() || (
         isSignedIn() && canAccessProcess(resource.data.caseId) &&
@@ -154,13 +241,14 @@ service cloud.firestore {
       );
       allow create: if isSignedIn() &&
         canAccessProcess(request.resource.data.caseId) &&
-        request.resource.data.authorUid == request.auth.uid &&
+        request.resource.data.authorUid == request.auth.uid && validComment(request.resource.data) &&
         (
-          isStaff() ||
+            (isStaff() && request.resource.data.authorRole != 'client') ||
           (request.resource.data.visibility == 'client' &&
+             request.resource.data.authorRole == 'client' &&
            processData(request.resource.data.caseId).userId == request.auth.uid)
         );
-      allow update, delete: if isAdmin();
+        allow update, delete: if false;
     }
 
     // Append-only activity history; client view is filtered by visibility.
@@ -175,10 +263,58 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
-    // Leads / public diagnostic intake.
+    function validIntake(data, leadId) {
+      return data.keys().hasOnly([
+        'id', 'officeId', 'source', 'fullName', 'email', 'phone', 'company',
+        'industry', 'stage', 'areasOfInterest', 'notes', 'status', 'createdAt',
+        'calculatedRiskScore', 'riskSummary', 'riskItems', 'internalNotes'
+      ]) &&
+      data.id == leadId && data.officeId == 'binlegal' &&
+      data.source in ['contact', 'diagnostic'] && data.status == 'nuevo_lead' &&
+      data.fullName is string && data.fullName.size() > 0 && data.fullName.size() <= 200 &&
+      data.email is string && data.email.size() > 3 && data.email.size() <= 320 &&
+      data.company is string && data.company.size() <= 300 &&
+      data.internalNotes is list && data.internalNotes.size() == 0 &&
+      data.areasOfInterest is list && data.areasOfInterest.size() <= 20 &&
+      data.riskItems is list && data.riskItems.size() <= 20 &&
+      data.riskSummary is string && data.riskSummary.size() <= 12000 &&
+      (!('notes' in data) || (data.notes is string && data.notes.size() <= 12000)) &&
+      (!('phone' in data) || (data.phone is string && data.phone.size() <= 100));
+    }
+
+    function commercialStage(data) {
+      return ('acceptedBudget' in data && data.acceptedBudget.services.size() > 0) ? 'cliente_activo' :
+        (('budget' in data && data.budget.status == 'enviado' && 'sentEvidence' in data.budget && data.budget.sentEvidence.size() > 0) ? 'propuesta_presentada' :
+        (('commercial' in data && 'meeting' in data.commercial && data.commercial.meeting.status == 'scheduled') ? 'sesion_programada' :
+        (('commercial' in data && ('contact' in data.commercial || ('meeting' in data.commercial && data.commercial.meeting.status == 'completed'))) ? 'diagnostico_enviado' : 'nuevo_lead')));
+    }
+
     match /leads/{leadId} {
-      allow create: if true;
-      allow read, update, delete: if isAdmin();
+      allow create: if (isAdmin() && request.resource.data.status == commercialStage(request.resource.data)) || validIntake(request.resource.data, leadId);
+      allow read, delete: if isAdmin();
+      // Exact retries can confirm a public submission without granting read access.
+      allow update: if (isAdmin() && request.resource.data.status == commercialStage(request.resource.data)) || (
+        validIntake(request.resource.data, leadId) && request.resource.data == resource.data
+      );
+    }
+
+    match /people/{personId} {
+      allow read: if isAdmin();
+      allow create: if isAdmin() && request.resource.data.officeId == 'binlegal'
+        && request.resource.data.id == personId && request.resource.data.accountUid == null;
+      allow update, delete: if isAdmin();
+    }
+    match /companies/{companyId} {
+      allow read: if isAdmin();
+      allow create: if isAdmin() && request.resource.data.officeId == 'binlegal'
+        && request.resource.data.id == companyId;
+      allow update, delete: if isAdmin();
+    }
+    match /leadActivity/{activityId} {
+      allow read: if isAdmin();
+      allow create: if isAdmin() && request.resource.data.officeId == 'binlegal'
+        && request.resource.data.actorUid == request.auth.uid;
+      allow update, delete: if false;
     }
 
     // Username lookup only returns the minimal account lookup fields.
@@ -199,6 +335,17 @@ service cloud.firestore {
 
     // Document metadata. Binary storage access is configured separately and must
     // not be opened until Storage rules are aligned with this case-level policy.
+    function validDocumentVersion(data) {
+      return data.version is int && data.version > 0 && (
+        ((!('previousVersionId' in data) || data.previousVersionId == null) && data.version == 1) ||
+        (data.previousVersionId is string &&
+         exists(/databases/$(database)/documents/clientDocuments/$(data.previousVersionId)) &&
+         get(/databases/$(database)/documents/clientDocuments/$(data.previousVersionId)).data.caseId == data.caseId &&
+         get(/databases/$(database)/documents/clientDocuments/$(data.previousVersionId)).data.clientId == data.clientId &&
+         get(/databases/$(database)/documents/clientDocuments/$(data.previousVersionId)).data.version + 1 == data.version &&
+         (isStaff() || get(/databases/$(database)/documents/clientDocuments/$(data.previousVersionId)).data.uploadedByUid == request.auth.uid))
+      );
+    }
     match /clientDocuments/{documentId} {
       allow get, list: if isAdmin() || (
         isSignedIn() && canAccessProcess(resource.data.caseId) &&
@@ -206,7 +353,10 @@ service cloud.firestore {
           (resource.data.clientId == request.auth.uid && resource.data.visibleToClient == true && resource.data.status == 'delivered') ||
           (resource.data.uploadedByUid == request.auth.uid && resource.data.clientId == request.auth.uid))
       );
-      allow create: if isSignedIn() && (
+      allow create: if isSignedIn() && validDocumentVersion(request.resource.data) &&
+        request.resource.data.clientId == processData(request.resource.data.caseId).userId &&
+        request.resource.data.visibleToClient == false &&
+        request.resource.data.storagePath.matches('client-documents/' + request.resource.data.caseId + '/' + request.auth.uid + '/.*') && (
         (isStaff() &&
           canAccessProcess(request.resource.data.caseId) &&
           request.resource.data.uploadedByUid == request.auth.uid) ||
@@ -218,14 +368,12 @@ service cloud.firestore {
           request.resource.data.status == 'received' &&
           request.resource.data.visibleToClient == false)
       );
-      allow update: if isAdmin() || (
-        isStaff() &&
+      allow update: if isStaff() &&
         canAccessProcess(resource.data.caseId) &&
-        request.resource.data.caseId == resource.data.caseId &&
-        request.resource.data.clientId == resource.data.clientId &&
-        request.resource.data.uploadedByUid == resource.data.uploadedByUid
-      );
-      allow delete: if isAdmin();
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','visibleToClient','publishedByUid','publishedAt']) &&
+        request.resource.data.status == 'delivered' && request.resource.data.visibleToClient == true &&
+        request.resource.data.publishedByUid == request.auth.uid && request.resource.data.publishedAt is string;
+      allow delete: if false;
     }
   }
 }

@@ -1,288 +1,161 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { CalendarClock, Check, ChevronLeft, CircleAlert, LoaderCircle, MessageSquare, Plus, Send, UserRound, X } from 'lucide-react';
-import { useAuth } from '../context/AuthContext';
-import { CaseDocumentLibrary } from './CaseDocumentLibrary';
-import { workflowService } from '../services/workflowService';
-import type { LegalProcess, WorkflowComment, WorkflowTask, WorkflowTaskPriority, WorkflowTaskStatus } from '../types';
+import {CaseControlsPanel} from './CaseControlsPanel';
+import {CaseMessages} from './CaseMessages';
+import {useEffect,useMemo,useState} from 'react';
+import {useAuth} from '../context/AuthContext';
+import {CaseDocumentLibrary} from './CaseDocumentLibrary';
+import {operationsService} from '../services/operationsService';
+import {TASK_LABELS,CASE_LABELS,taskNeedsReview,type TaskActor,type WorkMember} from '../domain/operations';
+import type {LegalProcess,WorkflowTask,WorkflowTaskStatus,CaseActivity} from '../types';
+import {formatCrmDate} from '../lib/dates';
 
-const LANES: Array<{ id: WorkflowTaskStatus; label: string }> = [
-  { id: 'unassigned', label: 'Sin asignar' },
-  { id: 'assigned', label: 'Asignado' },
-  { id: 'in_progress', label: 'En curso' },
-  { id: 'pending_approval', label: 'En revisión' },
-  { id: 'changes_requested', label: 'Correcciones' },
-  { id: 'completed', label: 'Completado' },
-];
+interface Props {onReviewOrClose:(process:LegalProcess,closing:boolean,summary:string,documentId:string)=>Promise<void>;onSaveCaseControls:(process:LegalProcess)=>Promise<void>;onStartCase:(process:LegalProcess)=>Promise<void>;process:LegalProcess;lawyers:string[];onBack:()=>void;onBackLabel?:string}
+const stages:WorkflowTaskStatus[]=['assigned','in_progress','pending_approval','changes_requested','completed'];
+const field='mt-1 w-full rounded-lg border border-slate-300 bg-white p-2 text-sm font-normal';
+export function WorkflowBoard({onReviewOrClose,onSaveCaseControls,onStartCase,process,lawyers,onBack,onBackLabel='Volver a asuntos'}:Props) {
+ const {currentUser,userProfile,isAdmin}=useAuth();
+ const preview=window.location.pathname.replace(/\/$/,'')==='/crm-preview';
+ const actor=useMemo<TaskActor>(()=>({uid:currentUser?.uid||'demo-admin-uid-01',name:userProfile?.displayName||'José Rafael Vásquez',admin:preview||isAdmin}),[currentUser?.uid,userProfile?.displayName,preview,isAdmin]);
+ const [tasks,setTasks]=useState<WorkflowTask[]>([]);
+ const [events,setEvents]=useState<CaseActivity[]>([]);
+ const [members,setMembers]=useState<WorkMember[]>([]);
+ const [loading,setLoading]=useState(true);
+ const [error,setError]=useState('');
+ const [notice,setNotice]=useState('');
+ const [busy,setBusy]=useState(false);
+ const [creating,setCreating]=useState(false);
+ const [editing,setEditing]=useState<WorkflowTask|null>(null);
+ const [starting,setStarting]=useState(false);
+ const [requirements,setRequirements]=useState('');
+ const [startEvidence,setStartEvidence]=useState('');
+ const [exceptionReason,setExceptionReason]=useState('');
+ const [library,setLibrary]=useState(false);
+ const [closing,setClosing]=useState(false);
+ const [closureSummary,setClosureSummary]=useState('');
+ const [deliveryId,setDeliveryId]=useState('');
+ const [deliveries,setDeliveries]=useState<Array<{id:string;name:string}>>([]);
+ const [view,setView]=useState<'list'|'board'>('list');
+ const [title,setTitle]=useState('');
+ const [description,setDescription]=useState('');
+ const [expectedResult,setExpectedResult]=useState('');
+ const [assignee,setAssignee]=useState(actor.uid);
+ const [reviewer,setReviewer]=useState(actor.uid);
+ const [requiresReview,setRequiresReview]=useState(true);
+ const [due,setDue]=useState('');
+ const [note,setNote]=useState('');
+ const [pending,setPending]=useState<{task:WorkflowTask;next:WorkflowTaskStatus}|null>(null);
+ useEffect(()=>{
+   setLoading(true);setError('');
+   return operationsService.subscribeTasks(process.id,actor,preview,items=>{setTasks(items);setLoading(false);},err=>{setError(err.message);setLoading(false);});
+ },[process.id,actor,preview]);
+ useEffect(()=>{
+   const self={uid:actor.uid,name:actor.name,role:'admin'};
+   if(preview) {setMembers([self,...lawyers.filter(name=>name!==actor.name).map((name,i)=>({uid:'demo-member-'+i,name,role:'lawyer'}))]);return;}
+   setMembers([self]);
+   if(!actor.admin) return;
+   return operationsService.subscribeMembers(items=>setMembers([self,...items.filter(item=>item.uid!==actor.uid)]),()=>setError('No pudimos cargar el equipo. Solo puedes asignarte trabajo a ti mientras recuperamos la conexión.'));
+ },[actor,preview,lawyers]);
+ useEffect(()=>operationsService.subscribeActivity(process.id,preview,setEvents,err=>setError(err.message)),[process.id,preview]);
+ useEffect(()=>{
+   if(preview){setDeliveries([]);return;}
+   return operationsService.subscribeDeliveries(process.id,setDeliveries,err=>setError(err.message));
+ },[process.id,preview]);
+ const run=async(action:()=>Promise<unknown>,success:string)=>{
+   if(busy)return;setBusy(true);setError('');setNotice('');
+   try {await action();setNotice(success);}catch(err){setError(err instanceof Error?err.message:'No se pudo guardar.');}finally{setBusy(false);}
+ };
+ const move=(task:WorkflowTask,next:WorkflowTaskStatus)=>{
+   if(next==='changes_requested'||task.status==='completed'||next==='cancelled') {setPending({task,next});setNote('');return;}
+   void run(()=>operationsService.moveTask(task,next,actor,'',preview,process),'Tarea actualizada.');
+ };
+ const create=()=>run(async()=>{
+   const responsible=members.find(item=>item.uid===assignee);
+   const review=members.find(item=>item.uid===reviewer);
+   const now=new Date().toISOString();
+   const draft:WorkflowTask={
+     id:crypto.randomUUID(),caseId:process.id,clientId:process.userId,title:title.trim(),description:description.trim(),
+     expectedResult:expectedResult.trim(),status:'assigned',priority:'normal',assignedToUid:responsible?.uid||null,
+     assignedToName:responsible?.name||null,assignedByUid:actor.uid,assignedByName:actor.name,createdByUid:actor.uid,
+     reviewerUid:requiresReview?review?.uid||null:null,reviewerName:requiresReview?review?.name||null:null,
+     requiresReview,requiresJoseApproval:requiresReview,reassignmentStatus:'not_required',visibility:'internal',
+     dueAt:due?new Date(due+'T12:00:00-04:00').toISOString():null,completedAt:null,createdAt:now,updatedAt:now,revision:0,
+   };
+   const task=editing?{...editing,title:draft.title,description:draft.description,expectedResult:draft.expectedResult,assignedToUid:draft.assignedToUid,assignedToName:draft.assignedToName,reviewerUid:draft.reviewerUid,reviewerName:draft.reviewerName,requiresReview:draft.requiresReview,requiresJoseApproval:draft.requiresJoseApproval,dueAt:draft.dueAt,updatedAt:now}:draft;
+   await operationsService.saveTask(task,actor,preview);
+   setEditing(null);
+   setCreating(false);setTitle('');setDescription('');setExpectedResult('');setDue('');
+ },'Tarea creada y asignada.');
+ const card=(task:WorkflowTask)=><article key={task.id} className="min-w-0 rounded-xl border border-slate-200 bg-white p-4 shadow-sm" aria-label={task.title}>
+   <div className="flex flex-wrap items-start justify-between gap-2"><h3 className="font-bold text-slate-950 break-words">{task.title}</h3><span className="rounded-full bg-blue-50 px-2 py-1 text-xs text-blue-900">{TASK_LABELS[task.status]}</span></div>
+   <p className="mt-2 whitespace-pre-wrap text-sm text-slate-600">{task.description}</p>
+   <p className="mt-3 text-sm"><strong>Resultado esperado:</strong> {task.expectedResult||'Pendiente de definir en esta tarea anterior'}</p>
+   <div className="mt-3 grid gap-2 text-xs text-slate-600 sm:grid-cols-2">
+     <p>Responsable: <strong>{task.assignedToName||'Sin asignar'}</strong></p>
+     <p>Revisor: <strong>{taskNeedsReview(task)?task.reviewerName||'Pendiente de configurar':'No requiere revisión'}</strong></p>
+     <p>Vencimiento: {task.dueAt?formatCrmDate(task.dueAt):'Sin fecha'}</p>
+   </div>
+   {task.reviewNote&&<p className="mt-3 whitespace-pre-wrap rounded-lg bg-amber-50 p-3 text-sm text-amber-950"><strong>Observaciones:</strong> {task.reviewNote}</p>}
+   <div className="mt-4 flex flex-wrap gap-2">
+     {actor.admin&&!['completed','cancelled'].includes(task.status)&&<button disabled={busy} onClick={()=>{setEditing(task);setTitle(task.title);setDescription(task.description);setExpectedResult(task.expectedResult||'');setAssignee(task.assignedToUid||actor.uid);setReviewer(task.reviewerUid||actor.uid);setRequiresReview(taskNeedsReview(task));setDue(task.dueAt?task.dueAt.slice(0,10):'');setCreating(true);}} className="rounded-lg border px-3 py-2 text-sm">Editar / reasignar</button>}
+     {(actor.admin||actor.uid===task.assignedToUid)&&['assigned','in_progress','changes_requested'].includes(task.status)&&<button disabled={busy} onClick={()=>move(task,'cancelled')} className="rounded-lg border px-3 py-2 text-sm text-red-800">Cancelar con motivo</button>}
+     {(actor.admin||actor.uid===task.assignedToUid)&&task.status==='assigned'&&<button disabled={busy||process.caseStage==='not_started'} title={process.caseStage==='not_started'?'Autoriza el inicio del trámite para ejecutar tareas':undefined} onClick={()=>move(task,'in_progress')} className="rounded-lg border px-3 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50">Iniciar tarea</button>}
+     {(actor.admin||actor.uid===task.assignedToUid)&&task.status==='in_progress'&&<button disabled={busy} onClick={()=>move(task,taskNeedsReview(task)?'pending_approval':'completed')} className="rounded-lg bg-[#0071ce] px-3 py-2 text-sm text-white">{taskNeedsReview(task)?'Enviar a revisión':'Completar tarea'}</button>}
+     {(actor.admin||actor.uid===task.reviewerUid)&&task.status==='pending_approval'&&<>
+       <button disabled={busy} onClick={()=>move(task,'completed')} className="rounded-lg bg-emerald-700 px-3 py-2 text-sm text-white">Aprobar y completar</button>
+       <button disabled={busy} onClick={()=>move(task,'changes_requested')} className="rounded-lg border border-amber-300 px-3 py-2 text-sm">Solicitar correcciones</button>
+     </>}
+     {(actor.admin||actor.uid===task.assignedToUid)&&task.status==='changes_requested'&&<button disabled={busy} onClick={()=>move(task,'in_progress')} className="rounded-lg border px-3 py-2 text-sm">Trabajar en correcciones</button>}
+     {(actor.admin||actor.uid===task.assignedToUid)&&task.status==='completed'&&<button disabled={busy} onClick={()=>move(task,'in_progress')} className="rounded-lg border px-3 py-2 text-sm">Reabrir con motivo</button>}
+   </div>
+ </article>;
+ return <section className="min-w-0 space-y-5">
+   <header className="rounded-xl border border-slate-200 bg-white p-5">
+     <button className="text-sm font-semibold text-blue-800" onClick={onBack}>← {onBackLabel}</button>
+     <p className="mt-4 text-xs uppercase tracking-wide text-slate-500">Asunto · {process.companyName||process.clientName}</p>
+     <h1 className="mt-1 text-xl font-bold text-slate-950">{process.title}</h1>
+     <p className="mt-2 text-sm text-slate-600">Estado del asunto: <strong>{process.caseStage?CASE_LABELS[process.caseStage]:process.status==='completado'?'Finalizado':'En ejecución'}</strong> · Responsable: {process.assignedLawyer}</p>
+     <p className="mt-2 text-xs text-slate-500">Completar una tarea no cierra el asunto. Cada servicio conserva su ejecución y entrega.</p>
+     <div className="mt-4 flex flex-wrap gap-2">{actor.admin&&<button onClick={()=>{setEditing(null);setTitle('');setDescription('');setExpectedResult('');setDue('');setAssignee(actor.uid);setReviewer(actor.uid);setRequiresReview(true);setCreating(true);}} className="rounded-lg bg-[#0071ce] px-4 py-2 text-sm font-semibold text-white">Nueva tarea</button>}
+     {actor.admin&&process.caseStage==='not_started'&&<button disabled={busy} onClick={()=>setStarting(true)} className="rounded-lg border px-4 py-2 text-sm">Iniciar asunto</button>}<button onClick={()=>setLibrary(true)} className="rounded-lg border px-4 py-2 text-sm">Documentos del asunto</button></div>
+   </header>
+   {process.caseControls?.hold.state==='suspended'&&<p role="status" className="rounded-lg bg-amber-50 p-3 text-sm text-amber-950">Asunto suspendido: las tareas conservan su estado y no admiten avances hasta levantar la suspensión. Puedes registrar una cancelación con motivo.</p>}
+   {process.caseStage==='not_started'&&<p role="status" className="rounded-lg bg-blue-50 p-3 text-sm text-blue-950">Puedes planificar y asignar tareas. Para empezar a ejecutarlas, registra las condiciones y autoriza el inicio del trámite.</p>}
+   {error&&<p role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-800">{error}</p>}
+   {notice&&<p role="status" className="rounded-lg bg-emerald-50 p-3 text-sm text-emerald-800">{notice}</p>}
 
-const PRIORITIES: Array<{ value: WorkflowTaskPriority; label: string }> = [
-  { value: 'low', label: 'Baja' },
-  { value: 'normal', label: 'Normal' },
-  { value: 'high', label: 'Alta' },
-  { value: 'urgent', label: 'Urgente' },
-];
-
-interface WorkflowBoardProps {
-  process: LegalProcess;
-  lawyers: string[];
-  onBack: () => void;
-  onBackLabel?: string;
+   {actor.admin&&process.caseStage==='in_progress'&&<button disabled={busy||loading} className="rounded-lg border bg-white px-4 py-2 text-sm" onClick={()=>void run(()=>onReviewOrClose(process,false,'',''),'Asunto enviado a revisión final.')}>Pasar a revisión final</button>}
+   {actor.admin&&process.caseStage==='final_review'&&<section className="rounded-xl border bg-white p-5"><h2 className="font-bold">Revisión final y entrega</h2><p className="mt-2 text-sm">El cierre comprueba tareas, requisitos y una entrega final publicada con archivo real para la cuenta vinculada del cliente.</p>{!closing?<button className="mt-3 rounded-lg border px-4 py-2 text-sm" onClick={()=>setClosing(true)}>Preparar cierre del asunto</button>:<form className="mt-4 space-y-3" onSubmit={e=>{e.preventDefault();void run(()=>onReviewOrClose(process,true,closureSummary,deliveryId),'Asunto finalizado con entrega comprobada.');}}><label className="block text-sm">Resultado de la revisión final<textarea required maxLength={4000} className={field} value={closureSummary} onChange={e=>setClosureSummary(e.target.value)}/></label><label className="block text-sm">Entrega final publicada<select required className={field} value={deliveryId} onChange={e=>setDeliveryId(e.target.value)}><option value="">Selecciona la entrega</option>{deliveries.map(item=><option key={item.id} value={item.id}>{item.name}</option>)}</select></label>{!deliveries.length&&<p className="text-sm text-amber-900">No hay entregas reales publicadas disponibles. Los archivos de muestra no permiten finalizar.</p>}<button disabled={busy||!deliveries.length} className="rounded-lg bg-blue-800 px-4 py-2 text-sm text-white">Comprobar entrega y finalizar</button></form>}</section>}
+   {process.closure&&<section className="rounded-xl border bg-white p-5"><h2 className="font-bold">Cierre documentado</h2><p className="mt-2 whitespace-pre-wrap text-sm">{process.closure.summary}</p><p className="mt-2 text-xs text-slate-500">Entrega: {process.closure.documentId} · {formatCrmDate(process.closure.recordedAt)}</p></section>}
+   <CaseControlsPanel key={process.id} process={process} canEdit={actor.admin} onSave={onSaveCaseControls}/>
+   <CaseMessages process={process} staffMode/>
+   {starting&&<form className="rounded-xl border bg-white p-5" onSubmit={e=>{e.preventDefault();void run(async()=>{await onStartCase({...process,startAuthorization:{requirements,evidence:startEvidence,exceptionReason}});setStarting(false);},'Inicio autorizado y registrado.');}}>
+     <h2 className="font-bold">Autorizar inicio del asunto</h2>
+     <p className="mt-2 text-sm text-slate-600">Define los recaudos mínimos, anticipo o autorización aplicables a este servicio. Registra dónde se comprobó su cumplimiento. Si hay pendientes y decides iniciar, explica la excepción; quedará en el historial.</p>
+     <fieldset disabled={busy} className="mt-4 grid gap-4">
+       <label className="text-sm">Condiciones de inicio<textarea required maxLength={4000} value={requirements} onChange={e=>setRequirements(e.target.value)} className={field}/></label>
+       <label className="text-sm">Evidencia de cumplimiento<textarea maxLength={4000} value={startEvidence} onChange={e=>setStartEvidence(e.target.value)} className={field}/></label>
+       <label className="text-sm">Motivo de excepción autorizada, si aplica<textarea maxLength={4000} value={exceptionReason} onChange={e=>setExceptionReason(e.target.value)} className={field}/></label>
+       <div className="flex flex-wrap gap-2"><button disabled={busy} className="rounded-lg bg-blue-800 px-4 py-2 text-white">Autorizar e iniciar</button><button type="button" onClick={()=>setStarting(false)} className="rounded-lg border px-4 py-2">Cancelar</button></div>
+     </fieldset>
+   </form>}
+   {process.startAuthorization&&<details className="rounded-xl border bg-white p-4"><summary className="cursor-pointer font-semibold">Condiciones y autorización de inicio</summary><p className="mt-3 whitespace-pre-wrap text-sm">{process.startAuthorization.requirements}</p><p className="mt-2 whitespace-pre-wrap text-sm">Evidencia: {process.startAuthorization.evidence||'Sin cumplimiento acreditado'}</p>{process.startAuthorization.exceptionReason&&<p className="mt-2 whitespace-pre-wrap text-sm text-amber-900">Excepción autorizada: {process.startAuthorization.exceptionReason}</p>}</details>}
+   {creating&&<form onSubmit={e=>{e.preventDefault();void create();}} className="rounded-xl border bg-white p-5">
+     <h2 className="font-bold">{editing?'Editar y reasignar tarea':'Crear tarea del asunto'}</h2>
+     <fieldset disabled={busy} className="mt-4 grid gap-4 sm:grid-cols-2">
+       <label className="text-sm font-medium">Título de la tarea<input required maxLength={200} value={title} onChange={e=>setTitle(e.target.value)} className={field}/></label>
+       <label className="text-sm font-medium">Responsable de la tarea<select value={assignee} onChange={e=>setAssignee(e.target.value)} className={field}>{members.map(item=><option key={item.uid} value={item.uid}>{item.name}</option>)}</select></label>
+       <label className="text-sm font-medium sm:col-span-2">Resultado esperado<textarea required maxLength={4000} value={expectedResult} onChange={e=>setExpectedResult(e.target.value)} className={field}/></label>
+       <label className="text-sm font-medium sm:col-span-2">Instrucciones<textarea maxLength={8000} value={description} onChange={e=>setDescription(e.target.value)} className={field}/></label>
+       <label className="text-sm font-medium">Fecha límite<input required type="date" value={due} onChange={e=>setDue(e.target.value)} className={field}/></label>
+       <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={requiresReview} onChange={e=>setRequiresReview(e.target.checked)}/> Requiere revisión</label>
+       {requiresReview&&<label className="text-sm font-medium">Revisor de la tarea<select required value={reviewer} onChange={e=>setReviewer(e.target.value)} className={field}>{members.map(item=><option key={item.uid} value={item.uid}>{item.name}</option>)}</select></label>}
+       <p className="text-xs text-slate-500 sm:col-span-2">Responsable y revisor tendrán acceso a este asunto. La asignación no les concede acceso a otros asuntos.</p>
+       <div className="flex flex-wrap gap-2 sm:col-span-2"><button className="rounded-lg bg-slate-900 px-4 py-2 text-sm text-white" disabled={busy}>{busy?'Guardando…':'Crear y asignar tarea'}</button><button type="button" className="rounded-lg border px-4 py-2 text-sm" onClick={()=>setCreating(false)}>Cancelar</button></div>
+     </fieldset>
+   </form>}
+   <div className="flex flex-wrap items-center justify-between gap-3"><h2 className="font-bold">Tareas del asunto ({tasks.length})</h2><div className="flex gap-2"><button aria-pressed={view==='list'} className="rounded-lg border bg-white px-3 py-2 text-sm" onClick={()=>setView('list')}>Lista</button><button aria-pressed={view==='board'} className="rounded-lg border bg-white px-3 py-2 text-sm" onClick={()=>setView('board')}>Tablero</button></div></div>
+   {loading?<p role="status">Cargando tareas…</p>:!tasks.length?<p className="rounded-xl border border-dashed bg-white p-8 text-center text-slate-500">Este asunto todavía no tiene tareas. Crea la primera con su resultado esperado y responsable.</p>:view==='list'?<div className="grid gap-4 lg:grid-cols-2">{tasks.map(card)}</div>:<div className="flex gap-3 overflow-x-auto pb-4">{stages.map(stage=><section key={stage} className="w-80 shrink-0 rounded-xl bg-slate-100 p-3"><h2 className="mb-3 text-sm font-bold">{TASK_LABELS[stage]} ({tasks.filter(item=>item.status===stage).length})</h2><div className="space-y-3">{tasks.filter(item=>item.status===stage).map(card)}</div></section>)}</div>}
+   <details className="rounded-xl border bg-white p-4"><summary className="cursor-pointer font-semibold">Historial del asunto ({events.length})</summary><ul className="mt-4 space-y-3 text-sm">{events.map(item=><li key={item.id}><p>{item.summary.replace(/\b(in_progress|pending_approval|changes_requested|completed|assigned|cancelled|unassigned)\b/g,value=>TASK_LABELS[value as WorkflowTaskStatus])}</p><p className="text-xs text-slate-500">{item.actorName} · {formatCrmDate(item.createdAt)}</p></li>)}</ul></details>
+   {pending&&<div role="dialog" aria-modal="true" aria-labelledby="movement-title" className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/50 p-3 sm:p-4"><form className="my-auto max-h-[calc(100dvh-1.5rem)] w-full max-w-lg overflow-y-auto rounded-2xl bg-white p-4 sm:p-6" onSubmit={e=>{e.preventDefault();void run(async()=>{await operationsService.moveTask(pending.task,pending.next,actor,note,preview,process);setPending(null);},'Movimiento registrado.');}}><h2 id="movement-title" className="text-lg font-bold">{pending.next==='changes_requested'?'Solicitar correcciones':'Registrar motivo'}</h2><label className="mt-4 block text-sm">Observaciones<textarea required autoFocus value={note} onChange={e=>setNote(e.target.value)} className={field} rows={4}/></label><p className="mt-2 text-xs text-slate-500">Las observaciones se conservarán en el historial y estarán disponibles para el responsable.</p><div className="mt-4 flex flex-wrap gap-2"><button disabled={busy||!note.trim()} className="rounded-lg bg-[#0071ce] px-4 py-2 text-white">Confirmar movimiento</button><button type="button" className="rounded-lg border px-4 py-2" onClick={()=>setPending(null)}>Cancelar</button></div>{error&&<p role="alert" className="mt-3 text-red-700">{error}</p>}</form></div>}
+   {library&&<div role="dialog" aria-modal="true" aria-label="Documentos del asunto" className="fixed inset-0 z-50 overflow-auto bg-slate-100 p-4"><button onClick={()=>setLibrary(false)} className="mb-4 rounded-lg border bg-white px-4 py-2">Volver a tareas</button><CaseDocumentLibrary process={process} staffMode/></div>}
+ </section>;
 }
-
-export const WorkflowBoard: React.FC<WorkflowBoardProps> = ({ process, lawyers, onBack, onBackLabel = 'Volver a expedientes' }) => {
-  const { currentUser, userProfile, isAdmin } = useAuth();
-  const [tasks, setTasks] = useState<WorkflowTask[]>([]);
-  const [comments, setComments] = useState<WorkflowComment[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
-  const [notice, setNotice] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [showCreate, setShowCreate] = useState(false);
-  const [showLibrary, setShowLibrary] = useState(false);
-  const [activeTask, setActiveTask] = useState<string | null>(null);
-  const [newTitle, setNewTitle] = useState('');
-  const [newDescription, setNewDescription] = useState('');
-  const [newAssignee, setNewAssignee] = useState('');
-  const [newPriority, setNewPriority] = useState<WorkflowTaskPriority>('normal');
-  const [newDueDate, setNewDueDate] = useState('');
-  const [commentText, setCommentText] = useState('');
-  const [commentVisibility, setCommentVisibility] = useState<'internal' | 'client'>('internal');
-  const [reassignmentChoices, setReassignmentChoices] = useState<Record<string, string>>({});
-
-  const demoMode = window.location.pathname.replace(/\/$/, '') === '/crm-preview';
-  const demoTasksKey = `binlegal_preview_tasks_${process.id}`;
-  const demoCommentsKey = `binlegal_preview_comments_${process.id}`;
-  const actorUid = currentUser?.uid || userProfile?.userId || 'demo-admin-uid-01';
-  const actorName = userProfile?.displayName || currentUser?.displayName || currentUser?.email || 'Equipo BinLegal';
-  const isCaseLead = isAdmin || process.assignedLawyerId === actorUid || process.assignedLawyer === actorName;
-
-  useEffect(() => {
-    setLoading(true);
-    if (demoMode) {
-      try {
-        const savedTasks = localStorage.getItem(demoTasksKey);
-        const savedComments = localStorage.getItem(demoCommentsKey);
-        const now = new Date().toISOString();
-        const sampleTasks: WorkflowTask[] = [
-          { id: 'demo-' + process.id + '-task-1', caseId: process.id, clientId: process.userId, title: 'Verificar recaudos y datos del cliente', description: 'Revisar que los datos de identidad y de la empresa coincidan con los documentos recibidos.', status: 'completed', priority: 'high', assignedToUid: 'demo-lawyer-01', assignedToName: process.assignedLawyer || 'José Rafael Vásquez', assignedByUid: 'demo-admin-uid-01', assignedByName: 'José Rafael Vásquez', createdByUid: 'demo-admin-uid-01', createdAt: now, updatedAt: now, completedAt: now, requiresJoseApproval: true, reassignmentStatus: 'not_required', visibility: 'internal' },
-          { id: 'demo-' + process.id + '-task-2', caseId: process.id, clientId: process.userId, title: 'Preparar borrador del trámite', description: 'Preparar la primera versión y registrar cualquier dato pendiente para revisión interna.', status: 'in_progress', priority: 'high', assignedToUid: 'demo-lawyer-02', assignedToName: 'María Fernández', assignedByUid: 'demo-admin-uid-01', assignedByName: 'José Rafael Vásquez', createdByUid: 'demo-admin-uid-01', createdAt: now, updatedAt: now, dueAt: new Date(Date.now() + 3 * 86400000).toISOString(), requiresJoseApproval: true, reassignmentStatus: 'not_required', visibility: 'internal' },
-          { id: 'demo-' + process.id + '-task-3', caseId: process.id, clientId: process.userId, title: 'Revisión del supervisor', description: 'Validación de consistencia, requisitos aplicables y calidad del entregable antes de enviarlo.', status: 'assigned', priority: 'normal', assignedToUid: 'demo-supervisor-01', assignedToName: 'Supervisor Legal', assignedByUid: 'demo-admin-uid-01', assignedByName: 'José Rafael Vásquez', createdByUid: 'demo-admin-uid-01', createdAt: now, updatedAt: now, requiresJoseApproval: true, reassignmentStatus: 'not_required', visibility: 'internal' },
-          { id: 'demo-' + process.id + '-task-4', caseId: process.id, clientId: process.userId, title: 'Actualizar al cliente sobre el próximo hito', description: process.nextMilestone || 'Confirmar el siguiente paso y el plazo estimado.', status: 'unassigned', priority: 'normal', assignedToUid: null, assignedToName: null, assignedByUid: 'demo-admin-uid-01', assignedByName: 'José Rafael Vásquez', createdByUid: 'demo-admin-uid-01', createdAt: now, updatedAt: now, requiresJoseApproval: true, reassignmentStatus: 'not_required', visibility: 'client' },
-        ];
-        const initialTasks = savedTasks ? JSON.parse(savedTasks) as WorkflowTask[] : sampleTasks;
-        const initialComments = savedComments ? JSON.parse(savedComments) as WorkflowComment[] : [];
-        setTasks(initialTasks);
-        setComments(initialComments);
-        if (!savedTasks) localStorage.setItem(demoTasksKey, JSON.stringify(initialTasks));
-        if (!savedComments) localStorage.setItem(demoCommentsKey, JSON.stringify(initialComments));
-      } catch { setTasks([]); setComments([]); }
-      setLoading(false);
-      return;
-    }
-    const stopTasks = workflowService.subscribeCaseTasks(process.id, setTasks, (err) => {
-      setError(err.message || 'No se pudieron cargar los trámites.');
-      setLoading(false);
-    });
-    const stopComments = workflowService.subscribeCaseComments(process.id, setComments, (err) => {
-      setError(err.message || 'No se pudieron cargar los comentarios.');
-    });
-    const stopActivity = workflowService.subscribeCaseActivity(process.id, () => {}, () => {});
-    const timeout = window.setTimeout(() => setLoading(false), 900);
-    return () => {
-      stopTasks();
-      stopComments();
-      stopActivity();
-      window.clearTimeout(timeout);
-    };
-  }, [process.id, demoMode]);
-
-  const commentsByTask = useMemo(() => {
-    const map = new Map<string, WorkflowComment[]>();
-    comments.forEach(comment => {
-      const key = comment.taskId || 'case';
-      map.set(key, [...(map.get(key) || []), comment]);
-    });
-    return map;
-  }, [comments]);
-
-  const runAction = async (action: () => Promise<unknown>, success: string) => {
-    setBusy(true);
-    setError('');
-    setNotice('');
-    try {
-      await action();
-      setNotice(success);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'No se pudo guardar. Comprueba la conexión y los permisos de Firebase.');
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const createTask = async (event: React.FormEvent) => {
-    event.preventDefault();
-    if (!actorUid || !newTitle.trim()) return;
-    const assignedName = newAssignee || null;
-    const task: Omit<WorkflowTask, 'id' | 'createdAt' | 'updatedAt'> = {
-      caseId: process.id,
-      clientId: process.userId,
-      title: newTitle.trim(),
-      description: newDescription.trim(),
-      status: assignedName ? 'assigned' : 'unassigned',
-      priority: newPriority,
-      assignedToUid: assignedName,
-      assignedToName: assignedName,
-      assignedByUid: actorUid,
-      assignedByName: actorName,
-      createdByUid: actorUid,
-      dueAt: newDueDate ? new Date(newDueDate + 'T12:00:00').toISOString() : null,
-      completedAt: null,
-      requiresJoseApproval: true,
-      reassignmentStatus: 'not_required',
-      visibility: 'internal',
-    };
-    await runAction(async () => {
-      if (demoMode) { const now = new Date().toISOString(); const next = [...tasks, { ...task, id: `demo-task-${Date.now()}`, createdAt: now, updatedAt: now } as WorkflowTask]; setTasks(next); localStorage.setItem(demoTasksKey, JSON.stringify(next)); } else { await workflowService.createTask(task); }
-      setNewTitle('');
-      setNewDescription('');
-      setNewAssignee('');
-      setNewPriority('normal');
-      setNewDueDate('');
-      setShowCreate(false);
-    }, 'Trámite creado.');
-  };
-
-  const changeStatus = (task: WorkflowTask, status: WorkflowTaskStatus) =>
-    runAction(async () => { if (demoMode) { const next = tasks.map(item => item.id === task.id ? { ...item, status, completedAt: status === 'completed' ? new Date().toISOString() : null, updatedAt: new Date().toISOString() } : item); setTasks(next); localStorage.setItem(demoTasksKey, JSON.stringify(next)); } else { await workflowService.updateTaskStatus(task, status, actorUid, actorName); } }, 'Estado actualizado.');
-
-  const approveReassignment = (task: WorkflowTask, approve: boolean) =>
-    runAction(async () => { if (demoMode) { const next = tasks.map(item => item.id === task.id ? { ...item, reassignmentStatus: (approve ? 'approved' : 'rejected') as 'approved' | 'rejected', ...(approve ? { assignedToUid: item.proposedAssigneeUid || null, assignedToName: item.proposedAssigneeName || null, status: item.proposedAssigneeUid ? ('assigned' as WorkflowTaskStatus) : ('unassigned' as WorkflowTaskStatus) } : {}), updatedAt: new Date().toISOString() } : item); setTasks(next); localStorage.setItem(demoTasksKey, JSON.stringify(next)); } else { await workflowService.resolveReassignment(task, approve, actorUid, actorName); } }, approve ? 'Reasignación aprobada.' : 'Reasignación rechazada.');
-
-  const requestReassignment = (task: WorkflowTask) => {
-    const nextName = reassignmentChoices[task.id];
-    if (!nextName) return;
-    return runAction(async () => { if (demoMode) { const next = tasks.map(item => item.id === task.id ? { ...item, reassignmentStatus: 'pending_approval' as const, proposedAssigneeUid: nextName, proposedAssigneeName: nextName, updatedAt: new Date().toISOString() } : item); setTasks(next); localStorage.setItem(demoTasksKey, JSON.stringify(next)); } else { await workflowService.proposeReassignment(task, nextName, nextName, actorUid, actorName); } }, 'Solicitud enviada para aprobación.');
-  };
-
-  const addComment = async (event: React.FormEvent) => {
-    event.preventDefault();
-    if (!actorUid || !commentText.trim()) return;
-    await runAction(async () => {
-      const comment = {
-        caseId: process.id,
-        taskId: activeTask,
-        authorUid: actorUid,
-        authorName: actorName,
-        authorRole: (userProfile?.role === 'admin' || userProfile?.role === 'lawyer' || userProfile?.role === 'supervisor' || userProfile?.role === 'intern' || userProfile?.role === 'secretary') ? userProfile.role : 'client' as const,
-        body: commentText.trim(),
-        visibility: commentVisibility,
-      };
-      if (demoMode) { const next = [...comments, { ...comment, id: `demo-comment-${Date.now()}`, createdAt: new Date().toISOString() } as WorkflowComment]; setComments(next); localStorage.setItem(demoCommentsKey, JSON.stringify(next)); } else { await workflowService.addComment(comment); }
-      setCommentText('');
-    }, commentVisibility === 'client' ? 'Actualización publicada para el cliente.' : 'Comentario interno añadido.');
-  };
-
-  return (
-    <div className="relative min-h-[70vh] w-full min-w-0 overflow-hidden rounded-xl bg-neutral-100 text-neutral-900">
-      <header className="sticky top-0 z-10 bg-white border-b border-neutral-200 px-3 sm:px-5 py-3 sm:py-4 flex flex-wrap items-center justify-between gap-3">
-        <div className="min-w-0 flex items-center gap-3">
-          <button onClick={onBack} className="p-2 rounded-lg hover:bg-neutral-100 shrink-0" aria-label={onBackLabel} title={onBackLabel}><ChevronLeft className="w-5 h-5" /></button>
-          <div className="min-w-0">
-            <div className="text-[10px] font-bold uppercase tracking-widest text-neutral-500">Tablero de trámites · {process.id}</div>
-            <h1 className="text-lg sm:text-xl font-extrabold truncate">{process.title}</h1>
-            <p className="text-xs text-neutral-500 truncate">{process.clientName || process.clientEmail} · Responsable del expediente: {process.assignedLawyer || 'Sin asignar'}</p>
-          </div>
-        </div>
-        <div className="flex flex-wrap gap-2 min-w-0"><button onClick={() => setShowLibrary(true)} className="inline-flex items-center gap-2 rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm font-semibold">Biblioteca</button><button onClick={() => setShowCreate(v => !v)} className="inline-flex items-center gap-2 rounded-lg bg-[#0071ce] text-white px-3 py-2 text-sm font-semibold"><Plus className="w-4 h-4" /> Nuevo trámite</button></div>
-      </header>
-
-      <main className="w-full max-w-full min-w-0 mx-auto p-3 sm:p-5 space-y-4">
-        <section className="grid grid-cols-1 gap-3 md:grid-cols-4">
-          <div className="rounded-xl border border-neutral-200 bg-white p-4"><p className="text-[10px] font-bold uppercase tracking-widest text-neutral-500">Estado del expediente</p><p className="mt-2 text-sm font-extrabold">{({ recaudos: 'Recaudos', redaccion: 'Redacción', tramite_publico: 'En ente público', revision: 'Revisión', completado: 'Completado' } as Record<string,string>)[process.status] || process.status}</p><p className="mt-1 text-xs text-neutral-500">{process.id}</p></div>
-          <div className="rounded-xl border border-neutral-200 bg-white p-4"><p className="text-[10px] font-bold uppercase tracking-widest text-neutral-500">Avance general</p><p className="mt-2 text-2xl font-extrabold">{process.progress}%</p><div className="mt-2 h-2 rounded-full bg-neutral-100"><div className="h-2 rounded-full bg-blue-600" style={{ width: (Math.max(0, Math.min(100, process.progress))) + '%' }} /></div></div>
-          <div className="rounded-xl border border-neutral-200 bg-white p-4"><p className="text-[10px] font-bold uppercase tracking-widest text-neutral-500">Trámites de trabajo</p><p className="mt-2 text-2xl font-extrabold">{tasks.length}</p><p className="mt-1 text-xs text-neutral-500">{tasks.filter(task => task.status === 'completed').length} completados · {tasks.filter(task => task.status === 'in_progress').length} en curso</p></div>
-          <div className="rounded-xl border border-neutral-200 bg-white p-4"><p className="text-[10px] font-bold uppercase tracking-widest text-neutral-500">Próximo hito</p><p className="mt-2 text-sm font-extrabold">{process.nextMilestone || 'Pendiente de definir'}</p><p className="mt-1 text-xs text-neutral-500">Fecha objetivo: {process.targetDate || 'Por confirmar'}</p></div>
-        </section>
-        {error && <div role="alert" className="rounded-lg border border-red-200 bg-red-50 text-red-800 p-3 text-sm flex gap-2"><CircleAlert className="w-4 h-4 shrink-0 mt-0.5" />{error}</div>}
-        {notice && <div className="rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-800 p-3 text-sm">{notice}</div>}
-        {showCreate && <form onSubmit={createTask} className="bg-white rounded-xl border border-neutral-200 p-4 sm:p-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
-          <label className="text-xs font-semibold lg:col-span-2">Nombre del trámite<input required value={newTitle} onChange={e => setNewTitle(e.target.value)} placeholder="Ej. Preparar recaudos del RIF" className="mt-1 w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm font-normal" /></label>
-          <label className="text-xs font-semibold">Asignar a<select value={newAssignee} onChange={e => setNewAssignee(e.target.value)} className="mt-1 w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm font-normal"><option value="">Sin asignar</option>{lawyers.map(name => <option key={name} value={name}>{name}</option>)}</select></label>
-          <label className="text-xs font-semibold">Prioridad<select value={newPriority} onChange={e => setNewPriority(e.target.value as WorkflowTaskPriority)} className="mt-1 w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm font-normal">{PRIORITIES.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}</select></label>
-          <label className="text-xs font-semibold">Fecha límite<input type="date" value={newDueDate} onChange={e => setNewDueDate(e.target.value)} className="mt-1 w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm font-normal" /></label>
-          <label className="text-xs font-semibold sm:col-span-2 lg:col-span-4">Instrucciones<textarea value={newDescription} onChange={e => setNewDescription(e.target.value)} rows={2} placeholder="Qué hay que hacer, contexto y entregable esperado" className="mt-1 w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm font-normal" /></label>
-          <div className="flex items-end gap-2"><button disabled={busy || !newTitle.trim()} className="rounded-lg bg-neutral-900 text-white px-4 py-2 text-sm font-semibold disabled:opacity-50">{busy ? 'Guardando…' : 'Crear trámite'}</button><button type="button" onClick={() => setShowCreate(false)} className="rounded-lg px-3 py-2 text-sm border border-neutral-300">Cancelar</button></div>
-        </form>}
-
-        <div className="flex items-center gap-2 text-xs text-neutral-500"><UserRound className="w-4 h-4" /> Las tareas son independientes del responsable general del expediente. Las reasignaciones quedan registradas y requieren aprobación del responsable.</div>
-        <section className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-          <div className="rounded-xl border border-neutral-200 bg-white p-4 sm:p-5">
-            <h2 className="font-extrabold">Hitos del expediente</h2>
-            <p className="mt-1 text-xs text-neutral-500">Lo ocurrido y lo que sigue en el caso.</p>
-            <div className="mt-4 space-y-4">
-              {(process.milestones || []).map((milestone, index) => <div key={milestone.title + index} className="flex gap-3"><span className="mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full bg-blue-600" /><div><p className="text-sm font-semibold">{milestone.title}</p><p className="mt-1 text-xs text-neutral-500">{milestone.date} · {milestone.note}</p></div></div>)}
-              <div className="rounded-lg border border-blue-100 bg-blue-50 p-3"><p className="text-[10px] font-bold uppercase tracking-widest text-blue-700">Siguiente paso</p><p className="mt-1 text-sm font-bold text-blue-950">{process.nextMilestone || 'Pendiente de definir'}</p></div>
-            </div>
-          </div>
-          <div className="rounded-xl border border-neutral-200 bg-white p-4 sm:p-5">
-            <h2 className="font-extrabold">Resumen de ejecución</h2>
-            <p className="mt-1 text-xs text-neutral-500">El flujo operativo se calcula desde los trámites registrados.</p>
-            <div className="mt-4 space-y-3">
-              {LANES.map(lane => <div key={lane.id} className="flex items-center justify-between gap-3 border-b border-neutral-100 pb-2"><span className="text-sm text-neutral-700">{lane.label}</span><span className="rounded-full bg-neutral-100 px-2.5 py-1 text-xs font-extrabold">{tasks.filter(task => task.status === lane.id).length}</span></div>)}
-              <div className="rounded-lg bg-neutral-50 p-3"><p className="text-xs font-bold">Responsable general</p><p className="mt-1 text-sm">{process.assignedLawyer || 'Sin asignar'}</p><p className="mt-2 text-xs text-neutral-500">La asignación de cada trámite es independiente del responsable general del expediente.</p></div>
-            </div>
-          </div>
-        </section>
-        {loading ? <div className="p-12 text-center text-neutral-500"><LoaderCircle className="w-6 h-6 animate-spin mx-auto mb-2" />Cargando trámites…</div> :
-          <div className="flex gap-3 overflow-x-auto pb-4 items-start">
-            {LANES.map(lane => {
-              const laneTasks = tasks.filter(task => task.status === lane.id);
-              return <section key={lane.id} className="w-[280px] min-w-[280px] rounded-xl bg-neutral-200/70 p-2.5">
-                <div className="flex items-center justify-between px-1 py-2"><h2 className="text-xs font-extrabold uppercase tracking-wide">{lane.label}</h2><span className="text-[10px] bg-white rounded-full px-2 py-1 font-bold">{laneTasks.length}</span></div>
-                <div className="space-y-2">
-                  {laneTasks.map(task => {
-                    const taskComments = commentsByTask.get(task.id) || [];
-                    return <article key={task.id} className="bg-white rounded-lg border border-neutral-200 p-3 shadow-sm space-y-3">
-                      <div className="flex items-start justify-between gap-2"><h3 className="text-sm font-bold leading-snug">{task.title}</h3><span className={`text-[9px] uppercase font-bold rounded px-1.5 py-1 ${task.priority === 'urgent' ? 'bg-red-100 text-red-700' : task.priority === 'high' ? 'bg-orange-100 text-orange-700' : 'bg-neutral-100 text-neutral-600'}`}>{task.priority}</span></div>
-                      {task.description && <p className="text-xs text-neutral-600 whitespace-pre-wrap">{task.description}</p>}
-                      <div className="text-[11px] text-neutral-500 space-y-1">
-                        <div className="flex gap-1.5 items-center"><UserRound className="w-3.5 h-3.5" />{task.assignedToName || 'Sin responsable asignado'}</div>
-                        {task.dueAt && <div className="flex gap-1.5 items-center"><CalendarClock className="w-3.5 h-3.5" />Límite: {new Date(task.dueAt).toLocaleDateString()}</div>}
-                        <div className="flex gap-1.5 items-center"><MessageSquare className="w-3.5 h-3.5" />{taskComments.length} comentarios</div>
-                      </div>
-                      {task.reassignmentStatus === 'pending_approval' && <div className="rounded-md bg-amber-50 border border-amber-200 p-2 text-xs space-y-2"><p>Solicitado: {task.proposedAssigneeName || 'Nuevo responsable'}</p>{isCaseLead ? <div className="flex gap-2"><button onClick={() => approveReassignment(task, true)} disabled={busy} className="rounded bg-emerald-700 text-white px-2 py-1"><Check className="inline w-3 h-3 mr-1" />Aprobar</button><button onClick={() => approveReassignment(task, false)} disabled={busy} className="rounded border border-neutral-300 px-2 py-1">Rechazar</button></div> : <p className="text-neutral-600">Pendiente de aprobación del responsable del expediente.</p>}</div>}
-                      <div className="flex flex-wrap gap-1.5">
-                        {(task.status === 'assigned' || task.status === 'unassigned') && <button onClick={() => changeStatus(task, 'in_progress')} disabled={busy} className="rounded border border-neutral-300 px-2 py-1 text-[10px] font-semibold hover:bg-neutral-50">Iniciar</button>}
-                        {task.status === 'in_progress' && <button onClick={() => changeStatus(task, task.requiresJoseApproval ? 'pending_approval' : 'completed')} disabled={busy} className="rounded border border-blue-200 bg-blue-50 text-blue-800 px-2 py-1 text-[10px] font-semibold hover:bg-blue-100">{task.requiresJoseApproval ? 'Enviar a revisión' : 'Completar'}</button>}
-                        {isCaseLead && task.status === 'pending_approval' && <button onClick={() => changeStatus(task, 'completed')} disabled={busy} className="rounded border border-emerald-200 text-emerald-800 px-2 py-1 text-[10px] font-semibold hover:bg-emerald-50">Aprobar y completar</button>}
-                        {isCaseLead && task.status === 'pending_approval' && <button onClick={() => changeStatus(task, 'changes_requested')} disabled={busy} className="rounded border border-amber-200 text-amber-800 px-2 py-1 text-[10px] font-semibold hover:bg-amber-50">Solicitar correcciones</button>}
-                        {task.status === 'changes_requested' && <button onClick={() => changeStatus(task, 'in_progress')} disabled={busy} className="rounded border border-neutral-300 px-2 py-1 text-[10px] font-semibold hover:bg-neutral-50">Reanudar corrección</button>}
-                        <button onClick={() => { setActiveTask(task.id); setCommentVisibility('internal'); }} className="rounded border border-neutral-300 px-2 py-1 text-[10px] font-semibold">Comentarios</button>
-                      </div>
-                      {task.reassignmentStatus !== 'pending_approval' && task.status !== 'completed' && task.status !== 'pending_approval' && <div className="flex gap-1.5 pt-1 border-t border-neutral-100">
-                        <select aria-label="Nuevo responsable" value={reassignmentChoices[task.id] || ''} onChange={e => setReassignmentChoices(prev => ({ ...prev, [task.id]: e.target.value }))} className="min-w-0 flex-1 rounded border border-neutral-300 px-2 py-1 text-[10px]">
-                          <option value="">Transferir a…</option>{lawyers.filter(name => name !== task.assignedToName).map(name => <option key={name} value={name}>{name}</option>)}
-                        </select>
-                        <button onClick={() => requestReassignment(task)} disabled={busy || !reassignmentChoices[task.id]} className="rounded bg-neutral-900 text-white px-2 py-1 text-[10px] font-semibold disabled:opacity-50">Solicitar</button>
-                      </div>}
-                    </article>;
-                  })}
-                  {laneTasks.length === 0 && <div className="rounded-lg border border-dashed border-neutral-300 p-5 text-center text-[11px] text-neutral-500">Sin trámites</div>}
-                </div>
-              </section>;
-            })}
-          </div>
-        }
-      </main>
-
-      {showLibrary && <CaseDocumentLibrary process={process} staffMode onClose={() => setShowLibrary(false)} />}
-
-      {activeTask && <div className="absolute inset-0 z-[80] bg-neutral-950/40 flex items-center justify-center p-3" onClick={() => setActiveTask(null)}>
-        <section role="dialog" aria-modal="true" className="w-full max-w-xl max-h-[85vh] overflow-y-auto rounded-2xl bg-white p-5 shadow-xl" onClick={e => e.stopPropagation()}>
-          <div className="flex justify-between gap-3 items-start"><div><h2 className="font-extrabold text-lg">Conversación del trámite</h2><p className="text-xs text-neutral-500">{tasks.find(t => t.id === activeTask)?.title}</p></div><button onClick={() => setActiveTask(null)} aria-label="Cerrar"><X className="w-5 h-5" /></button></div>
-          <div className="space-y-3 py-4">{(commentsByTask.get(activeTask) || []).map(comment => <div key={comment.id} className="rounded-lg bg-neutral-50 border border-neutral-200 p-3"><div className="flex justify-between gap-2 text-xs font-bold"><span>{comment.authorName}</span><span className="text-neutral-500 font-normal">{comment.visibility === 'client' ? 'Visible al cliente' : 'Interno'}</span></div><p className="text-sm whitespace-pre-wrap mt-1">{comment.body}</p><p className="text-[10px] text-neutral-400 mt-2">{new Date(comment.createdAt).toLocaleString()}</p></div>)}</div>
-          <form onSubmit={addComment} className="space-y-2 border-t border-neutral-200 pt-4"><label className="block text-xs font-semibold">Comentario<textarea required rows={3} value={commentText} onChange={e => setCommentText(e.target.value)} className="mt-1 w-full rounded-lg border border-neutral-300 p-3 text-sm font-normal" placeholder="Consulta al equipo, menciona a un colega o deja instrucciones…" /></label><div className="flex flex-wrap items-center justify-between gap-2"><select value={commentVisibility} onChange={e => setCommentVisibility(e.target.value as 'internal' | 'client')} className="rounded-lg border border-neutral-300 px-2 py-2 text-xs"><option value="internal">Nota interna</option><option value="client">Publicar al cliente</option></select><button disabled={busy || !commentText.trim()} className="inline-flex items-center gap-2 rounded-lg bg-neutral-900 text-white px-4 py-2 text-sm font-semibold disabled:opacity-50"><Send className="w-4 h-4" />Enviar comentario</button></div></form>
-        </section>
-      </div>}
-    </div>
-  );
-};

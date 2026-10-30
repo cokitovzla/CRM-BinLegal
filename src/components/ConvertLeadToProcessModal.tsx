@@ -112,7 +112,7 @@ export const ConvertLeadToProcessModal: React.FC<ConvertLeadToProcessModalProps>
   const [clientEmail, setClientEmail] = useState(initialEmail);
   const [title, setTitle] = useState(defaultSuggestion.title);
   const [category, setCategory] = useState<LegalProcess['category']>(defaultSuggestion.category);
-  const [assignedLawyer, setAssignedLawyer] = useState(lawyers[0] || 'José Rafael Vasquez');
+  const [assignedLawyer, setAssignedLawyer] = useState(lawyers[0] || 'Elena Marín');
   const [initialStatus, setInitialStatus] = useState<ProcessStatus>('recaudos');
   const [nextMilestone, setNextMilestone] = useState(defaultSuggestion.milestone);
 
@@ -163,12 +163,12 @@ export const ConvertLeadToProcessModal: React.FC<ConvertLeadToProcessModalProps>
       category,
       status: initialStatus,
       progress: progressByStatus[initialStatus] ?? 10,
-      assignedLawyer: assignedLawyer || 'José Rafael Vasquez',
+      assignedLawyer: assignedLawyer || 'Elena Marín',
       nextMilestone: nextMilestone.trim() || 'Revisión y consignación de recaudos',
       targetDate: targetDate || todayStr,
       documents: currentLead?.calculatedRiskScore ? [
         {
-          name: `Diagnóstico Legal Estratégico - ${companyName || 'BinLegal'}.pdf`,
+          name: `Diagnóstico Legal Estratégico - ${companyName || 'JurisNova'}.pdf`,
           category: 'Diagnóstico',
           date: todayStr,
           status: 'aprobado'
@@ -187,13 +187,13 @@ export const ConvertLeadToProcessModal: React.FC<ConvertLeadToProcessModalProps>
           date: todayStr,
           title: 'Expediente formalizado',
           description: `Asignado a ${assignedLawyer}. Plazo meta: ${targetDate}. Hito inicial: ${nextMilestone}`,
-          actor: 'José Rafael Vásquez',
+          actor: 'Elena Marín',
           role: 'Director Legal'
         }
       ],
       createdAt: todayStr,
       updatedAt: todayStr,
-      openedBy: 'José Rafael Vásquez'
+      openedBy: 'Elena Marín'
     };
 
     onConfirm(newProcess, {
